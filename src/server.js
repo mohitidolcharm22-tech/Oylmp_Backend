@@ -50,8 +50,9 @@ app.use(mongoSanitize())
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
   .split(',')
   .map(o => o.trim())
+  .filter(Boolean)
 
-app.use(cors({
+const corsOptions = {
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman)
     if (!origin || allowedOrigins.includes(origin)) {
@@ -62,7 +63,9 @@ app.use(cors({
   credentials: true,  // needed for HttpOnly cookie
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
-}))
+}
+
+app.use(cors(corsOptions))
 
 // Rate limiting on auth endpoints — prevent brute-force attacks
 const authLimiter = rateLimit({
@@ -83,8 +86,8 @@ const apiLimiter = rateLimit({
 })
 
 /* ─── Body parsing ─────────────────────────────────────────────────────────── */
-// Pre-flight OPTIONS must be answered before rate limiting
-app.options('*', cors())
+// Pre-flight OPTIONS must use the same CORS options (not the default wildcard)
+app.options('*', cors(corsOptions))
 app.use(express.json({ limit: '10kb' }))
 app.use(express.urlencoded({ extended: true, limit: '10kb' }))
 app.use(cookieParser())
