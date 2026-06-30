@@ -108,9 +108,23 @@ exports.getStudentProgressById = catchAsync(async (req, res, next) => {
   const QuizAttempt = require('../models/QuizAttempt')
 
   const user = await User.findById(req.params.id)
-    .select('name xp level streak stats badges teacherBadges role')
+    .select('name xp level streak stats badges teacherBadges role grade classIds')
     .populate('teacherBadges.awardedBy', 'name')
+    .populate('classIds', 'name grade section')
   if (!user) return next(new AppError('User not found.', 404))
+
+  // Scope checks — admin sees all; teacher must share a class; parent must own.
+  if (req.user.role === 'teacher') {
+    const teacherClasses = (req.user.classIds || []).map(String)
+    const studentClasses = (user.classIds || []).map(c => String(c._id || c))
+    const shared = teacherClasses.some(c => studentClasses.includes(c))
+    if (!shared) return next(new AppError('You can only view progress for students in your classes.', 403))
+  } else if (req.user.role === 'parent') {
+    const childIds = (req.user.children || []).map(String)
+    if (!childIds.includes(String(user._id))) {
+      return next(new AppError('You can only view progress for your own children.', 403))
+    }
+  }
 
   const attempts = await QuizAttempt.find({ userId: req.params.id })
     .populate('quizId', 'title subjectId difficulty xpReward')
@@ -123,19 +137,54 @@ exports.getStudentProgressById = catchAsync(async (req, res, next) => {
 /* ─────────────────────────── STUDENTS LIST (teacher/admin) ─────────────── */
 
 /* GET /api/v1/users/students */
+// Teachers see only students enrolled in their classes. Admins see all.
+// Optional ?classId=... narrows further (must still pass the ownership check
+// for teachers).
 exports.getStudents = catchAsync(async (req, res) => {
   const QuizAttempt = require('../models/QuizAttempt')
 
-  const students = await User.find({ role: 'student', isActive: true })
-    .select('name email username grade xp level streak stats avatarColor badges teacherBadges createdAt')
-    .populate('teacherBadges.awardedBy', 'name')
+  const filter = { role: 'student', isActive: true }
+
+  // When `available=true`, teachers can see every active student so they can
+  // pick them into a class roster. Without this flag the default behaviour
+  // stays scoped to "students in my classes".
+  const available = req.query.available === 'true' || req.query.available === true
+
+  if (req.user.role === 'teacher' && !available) {
+    const teacherClassIds = req.user.classIds || []
+    filter.classIds = { $in: teacherClassIds }
+  }
+  if (req.query.classId) {
+    if (req.user.role === 'teacher') {
+      const teacherClassIds = (req.user.classIds || []).map(String)
+      if (!teacherClassIds.includes(String(req.query.classId))) {
+        return res.status(200).json({ status: 'success', results: 0, data: { students: [] } })
+      }
+    }
+    filter.classIds = req.query.classId
+  }
+  if (req.query.grade) filter.grade = String(req.query.grade)
+
+  const students = await User.find(filter)
+    .select('name email username grade xp level streak stats avatarColor badges teacherBadges classIds createdAt')
+    .populate('classIds', 'name grade section')
     .sort({ xp: -1 })
     .lean()
 
-  // Attach attempt count for each student
-  const attemptCounts = await QuizAttempt.aggregate([
-    { $group: { _id: '$userId', count: { $sum: 1 }, avgScore: { $avg: '$score' }, passed: { $sum: { $cond: ['$passed', 1, 0] } } } },
-  ])
+  // Attach attempt count for each student. Scope the aggregation to JUST these
+  // student IDs so the database doesn't scan the whole QuizAttempt collection.
+  const studentIds = students.map(s => s._id)
+  const attemptCounts = studentIds.length
+    ? await QuizAttempt.aggregate([
+        { $match: { userId: { $in: studentIds } } },
+        { $group: {
+            _id: '$userId',
+            count: { $sum: 1 },
+            avgScore: { $avg: '$score' },
+            passed: { $sum: { $cond: ['$passed', 1, 0] } },
+          } },
+      ])
+    : []
   const countMap = {}
   attemptCounts.forEach(a => { countMap[String(a._id)] = a })
 
@@ -155,23 +204,35 @@ exports.getStudents = catchAsync(async (req, res) => {
 exports.getMyChildren = catchAsync(async (req, res) => {
   const QuizAttempt = require('../models/QuizAttempt')
 
-  const parent = await User.findById(req.user._id).populate('children', 'name email grade xp level streak stats avatarColor badges teacherBadges')
-  if (!parent) return res.status(200).json({ status: 'success', data: { children: [] } })
+  const parent = await User.findById(req.user._id).select('children').lean()
+  const childIds = (parent?.children || []).map(id => id)
+  if (!childIds.length) return res.status(200).json({ status: 'success', data: { children: [] } })
 
-  const childrenData = await Promise.all(
-    (parent.children || []).map(async child => {
-      const childWithBadges = await User.findById(child._id)
-        .select('name email grade xp level streak stats avatarColor badges teacherBadges')
-        .populate('teacherBadges.awardedBy', 'name')
-        .lean()
-      const attempts = await QuizAttempt.find({ userId: child._id })
-        .populate('quizId', 'title subjectId difficulty xpReward passingScore')
-        .sort({ completedAt: -1 })
-        .limit(10)
-        .lean()
-      return { ...childWithBadges, recentAttempts: attempts }
-    })
-  )
+  // Fetch all children + all recent attempts in TWO queries (was N+1: 2 per child).
+  const [children, allAttempts] = await Promise.all([
+    User.find({ _id: { $in: childIds } })
+      .select('name email grade xp level streak stats avatarColor badges teacherBadges')
+      .populate('teacherBadges.awardedBy', 'name')
+      .lean(),
+    QuizAttempt.find({ userId: { $in: childIds } })
+      .populate('quizId', 'title subjectId difficulty xpReward passingScore')
+      .sort({ completedAt: -1 })
+      .lean(),
+  ])
+
+  // Group attempts by userId and keep the last 10 each.
+  const attemptsByUser = new Map()
+  for (const a of allAttempts) {
+    const key = String(a.userId)
+    const list = attemptsByUser.get(key) || []
+    if (list.length < 10) list.push(a)
+    attemptsByUser.set(key, list)
+  }
+
+  const childrenData = children.map(c => ({
+    ...c,
+    recentAttempts: attemptsByUser.get(String(c._id)) || [],
+  }))
 
   res.status(200).json({ status: 'success', data: { children: childrenData } })
 })

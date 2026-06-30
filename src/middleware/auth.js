@@ -30,8 +30,10 @@ exports.protect = catchAsync(async (req, res, next) => {
     return next(new AppError('Invalid token type.', 401))
   }
 
-  // 3. Check user still exists
+  // 3. Check user still exists. Project away large arrays we never read here;
+  //    explicitly load passwordChangedAt (select:false) so step 5 actually works.
   const currentUser = await User.findById(decoded.sub)
+    .select('+passwordChangedAt -completedLessons -teacherBadges')
   if (!currentUser) {
     return next(new AppError('The account belonging to this token no longer exists.', 401))
   }

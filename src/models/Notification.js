@@ -14,5 +14,7 @@ const notificationSchema = new mongoose.Schema(
 )
 
 notificationSchema.index({ userId: 1, createdAt: -1 })
+// Optimises unread badge queries (countDocuments / find with isRead:false).
+notificationSchema.index({ userId: 1, isRead: 1, createdAt: -1 })
 
 module.exports = mongoose.model('Notification', notificationSchema)

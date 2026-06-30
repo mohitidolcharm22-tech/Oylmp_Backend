@@ -126,6 +126,12 @@ exports.getMe = catchAsync(async (req, res) => {
    ───────────────────────────────────────────────────────────────────────────── */
 exports.listUsers = catchAsync(async (req, res) => {
   const { role, search } = req.query
+
+  // Pagination: ?page=1&limit=50 (caps at 200 per page).
+  const page  = Math.max(parseInt(req.query.page, 10) || 1, 1)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200)
+  const skip  = (page - 1) * limit
+
   const filter = {}
   if (role) filter.role = role
   if (search) {
@@ -134,8 +140,16 @@ exports.listUsers = catchAsync(async (req, res) => {
       { email: { $regex: search, $options: 'i' } },
     ]
   }
-  const users = await User.find(filter).sort({ createdAt: -1 }).limit(200)
-  res.status(200).json({ status: 'success', results: users.length, data: { users } })
+  const [users, total] = await Promise.all([
+    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    User.countDocuments(filter),
+  ])
+  res.status(200).json({
+    status: 'success',
+    results: users.length,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    data: { users },
+  })
 })
 
 /* ─────────────────────────────────────────────────────────────────────────────

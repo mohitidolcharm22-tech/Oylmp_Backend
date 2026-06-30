@@ -15,5 +15,6 @@ router.delete('/:id',            protect, restrictTo('admin', 'teacher'), quiz.d
 router.post('/:id/submit',       protect, restrictTo('student'), quiz.submitQuiz)
 router.get('/:id/result',        protect, restrictTo('student'), quiz.getQuizResult)
 router.get('/:id/attempts',      protect, restrictTo('admin', 'teacher'), quiz.getQuizAttempts)
+router.delete('/:id/attempts/:studentId', protect, restrictTo('admin', 'teacher'), quiz.reissueQuiz)
 
 module.exports = router

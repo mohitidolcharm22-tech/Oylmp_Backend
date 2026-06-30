@@ -45,10 +45,18 @@ const quizSchema = new mongoose.Schema(
     xpReward:        { type: Number, default: 100 },
     icon:            { type: String, default: '📝' },
     questions:       [questionSchema],
+    // Number of questions to randomly serve per attempt. If null/0, serve all.
+    questionsToServe: { type: Number, default: null, min: 1 },
     createdBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     isActive:        { type: Boolean, default: true },
     assignedTo:      [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     assignedGrades:  [{ type: String }],
+    // Class-based assignment. Empty array = open to everyone matching grade.
+    assignedClassIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
+      default: [],
+      index: true,
+    },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } },
 )
@@ -59,5 +67,7 @@ quizSchema.virtual('totalQuestions').get(function () {
 
 quizSchema.index({ subjectId: 1, difficulty: 1 })
 quizSchema.index({ topicId: 1, subjectId: 1 })
+quizSchema.index({ isActive: 1, createdAt: -1 })
+quizSchema.index({ grade: 1, isActive: 1 })
 
 module.exports = mongoose.model('Quiz', quizSchema)

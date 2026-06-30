@@ -27,6 +27,7 @@ const lessonRoutes   = require('./routes/lessonRoutes')
 const quizRoutes     = require('./routes/quizRoutes')
 const userRoutes     = require('./routes/userRoutes')
 const badgeRoutes    = require('./routes/badgeRoutes')
+const classRoutes    = require('./routes/classRoutes')
 const errorHandler   = require('./middleware/errorHandler')
 const AppError       = require('./utils/AppError')
 
@@ -76,10 +77,12 @@ const authLimiter = rateLimit({
   message: { status: 'fail', message: 'Too many requests from this IP. Please try again after 15 minutes.' },
 })
 
-// General API rate limiter — prevents scraping / abuse of data endpoints
+// General API rate limiter — prevents scraping / abuse of data endpoints.
+// 1000/15min in production gives a logged-in user roughly ~1 request/sec which
+// comfortably covers normal dashboard/quiz usage even with parallel fetches.
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'production' ? 300 : 2000,
+  max: process.env.NODE_ENV === 'production' ? 1000 : 5000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { status: 'fail', message: 'Too many requests. Please slow down.' },
@@ -110,6 +113,7 @@ app.use('/api/v1/lessons',  apiLimiter, lessonRoutes)
 app.use('/api/v1/quizzes',  apiLimiter, quizRoutes)
 app.use('/api/v1/users',    apiLimiter, userRoutes)
 app.use('/api/v1/badges',   apiLimiter, badgeRoutes)
+app.use('/api/v1/classes',  apiLimiter, classRoutes)
 
 /* ─── 404 catch-all ────────────────────────────────────────────────────────── */
 app.all('*', (req, res, next) => {

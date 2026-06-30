@@ -65,15 +65,24 @@ exports.getTopicsBySubject = catchAsync(async (req, res) => {
 
   const topics = await Topic.find(filter).sort('order').lean()
 
-  // Attach lesson count per topic
-  const lessonCounts = await Lesson.aggregate([
-    { $match: { topicId: { $in: topics.map(t => t._id) }, isActive: true } },
-    { $group: { _id: '$topicId', count: { $sum: 1 } } },
-  ])
-  const countMap = Object.fromEntries(lessonCounts.map(x => [x._id.toString(), x.count]))
-  const topicsWithCount = topics.map(t => ({ ...t, lessonCount: countMap[t._id.toString()] || 0 }))
+  // Collect lesson IDs per topic so the client can detect 'all lessons done'.
+  const lessons = await Lesson.find(
+    { topicId: { $in: topics.map(t => t._id) }, isActive: true },
+    { _id: 1, topicId: 1 },
+  ).lean()
+  const idMap = {}
+  lessons.forEach(l => {
+    const k = String(l.topicId)
+    if (!idMap[k]) idMap[k] = []
+    idMap[k].push(String(l._id))
+  })
 
-  res.status(200).json({ status: 'success', results: topicsWithCount.length, data: { topics: topicsWithCount } })
+  const topicsEnriched = topics.map(t => {
+    const ids = idMap[String(t._id)] || []
+    return { ...t, lessonCount: ids.length, lessonIds: ids }
+  })
+
+  res.status(200).json({ status: 'success', results: topicsEnriched.length, data: { topics: topicsEnriched } })
 })
 
 /* ── GET /api/v1/topics/:id ───────────────────────────────────────────────── */
@@ -143,11 +152,25 @@ exports.completeLesson = catchAsync(async (req, res) => {
   if (!alreadyDone) {
     user.completedLessons.push(lessonId)
     user.stats.lessonsCompleted = user.completedLessons.length
+    const xpReward = lesson.xp || 0
+    if (xpReward > 0) {
+      user.xp = (user.xp || 0) + xpReward
+      // Level up: 500 XP per level (matches the frontend formula).
+      user.level = Math.max(1, Math.floor(user.xp / 500) + 1)
+    }
     await user.save({ validateBeforeSave: false })
   }
 
   res.status(200).json({
     status: 'success',
-    data: { completedLessons: user.completedLessons },
+    data: {
+      completedLessons: user.completedLessons,
+      user: {
+        xp:    user.xp,
+        level: user.level,
+        stats: user.stats,
+        completedLessons: user.completedLessons,
+      },
+    },
   })
 })

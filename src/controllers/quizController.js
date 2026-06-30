@@ -1,8 +1,18 @@
 const Quiz        = require('../models/Quiz')
 const QuizAttempt = require('../models/QuizAttempt')
 const User        = require('../models/User')
+const Class       = require('../models/Class')
 const AppError    = require('../utils/AppError')
 const catchAsync  = require('../utils/catchAsync')
+
+// Fisher–Yates shuffle (in-place, returns the array).
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
 
 /* ── GET /api/v1/quizzes ──────────────────────────────────────────────────── */
 exports.getQuizzes = catchAsync(async (req, res) => {
@@ -41,11 +51,32 @@ exports.getQuiz = catchAsync(async (req, res, next) => {
   // Strip correct answers from questions before sending to student
   const role = req.user?.role
   if (role === 'student') {
+    // Enforce class assignment: students outside the assigned classes can't fetch the quiz.
+    if (quiz.assignedClassIds?.length) {
+      const myClassIds = (req.user.classIds || []).map(String)
+      const overlap = quiz.assignedClassIds.some(id => myClassIds.includes(String(id)))
+      if (!overlap) return next(new AppError('Quiz not found.', 404))
+    }
+
     const sanitised = quiz.toObject()
-    sanitised.questions = sanitised.questions.map(q => {
+    let questions = sanitised.questions || []
+
+    // Random-pick K-of-N when questionsToServe is set and smaller than the bank.
+    const k = sanitised.questionsToServe
+    if (k && k > 0 && k < questions.length) {
+      questions = shuffle([...questions]).slice(0, k)
+    }
+
+    sanitised.questions = questions.map(q => {
       const { correctAnswer, explanation, ...rest } = q
       return rest
     })
+    sanitised.totalQuestions = sanitised.questions.length
+
+    // Lets the client skip a separate getMyAttempts round-trip when opening a quiz.
+    const prior = await QuizAttempt.findOne({ userId: req.user._id, quizId: quiz._id }).select('_id').lean()
+    sanitised.alreadyAttempted = !!prior
+
     return res.status(200).json({ status: 'success', data: { quiz: sanitised } })
   }
 
@@ -123,15 +154,22 @@ exports.submitQuiz = catchAsync(async (req, res, next) => {
 
   const { answers = [], timeTaken } = req.body
 
-  // Grade the answers
+  // Grade only the questions the student actually answered (supports random K-of-N).
+  // Unknown questionIds (not in this quiz) are ignored.
   let totalPoints = 0
   let earnedPoints = 0
-  const gradedAnswers = quiz.questions.map(q => {
+  const gradedAnswers = []
+  answers.forEach(a => {
+    const q = quiz.questions.id(a.questionId)
+    if (!q) return
     totalPoints += q.points
-    const submitted = answers.find(a => a.questionId === String(q._id))
-    const correct = gradeAnswer(q, submitted)
+    const correct = gradeAnswer(q, a)
     if (correct) earnedPoints += q.points
-    return { questionId: String(q._id), selected: submitted?.selected || '', correct }
+    gradedAnswers.push({
+      questionId: String(q._id),
+      selected: a.selected || '',
+      correct,
+    })
   })
 
   const score    = totalPoints > 0 ? Math.round((earnedPoints / totalPoints) * 100) : 0
@@ -148,11 +186,12 @@ exports.submitQuiz = catchAsync(async (req, res, next) => {
     timeTaken,
   })
 
-  // Update student XP & stats — recalculate avgScore from all attempts
-  const allAttempts = await QuizAttempt.find({ userId: req.user._id })
-  const avgScore = allAttempts.length
-    ? Math.round(allAttempts.reduce((s, a) => s + a.score, 0) / allAttempts.length)
-    : score
+  // Recompute avgScore via aggregation — avoids loading every QuizAttempt doc.
+  const [agg] = await QuizAttempt.aggregate([
+    { $match: { userId: req.user._id } },
+    { $group: { _id: null, avg: { $avg: '$score' } } },
+  ])
+  const avgScore = agg ? Math.round(agg.avg) : score
 
   await User.findByIdAndUpdate(req.user._id, {
     $inc: { xp: xpEarned, 'stats.quizzesTaken': 1 },
@@ -212,4 +251,48 @@ exports.getQuizAttempts = catchAsync(async (req, res) => {
     .sort({ completedAt: -1 })
     .lean()
   res.status(200).json({ status: 'success', results: attempts.length, data: { attempts } })
+})
+
+/* ── DELETE /api/v1/quizzes/:id/attempts/:studentId  (teacher / admin) ──── */
+// "Reissue" — wipe a student's existing attempt so they can take the quiz again.
+// Teacher must share at least one class with the student (or own this quiz's
+// assigned classes). Admin bypasses ownership checks.
+exports.reissueQuiz = catchAsync(async (req, res, next) => {
+  const { id: quizId, studentId } = req.params
+
+  const quiz = await Quiz.findById(quizId)
+  if (!quiz || !quiz.isActive) return next(new AppError('Quiz not found.', 404))
+
+  const student = await User.findOne({ _id: studentId, role: 'student' }).select('classIds')
+  if (!student) return next(new AppError('Student not found.', 404))
+
+  if (req.user.role === 'teacher') {
+    const teacherClasses = (req.user.classIds || []).map(String)
+    const studentClasses = (student.classIds || []).map(String)
+    const shared = teacherClasses.some(c => studentClasses.includes(c))
+    if (!shared) {
+      return next(new AppError('You can only reissue quizzes for students in your classes.', 403))
+    }
+  }
+
+  const attempt = await QuizAttempt.findOne({ userId: studentId, quizId })
+  if (!attempt) return next(new AppError('No attempt exists for this student on this quiz.', 404))
+
+  await QuizAttempt.deleteOne({ _id: attempt._id })
+
+  // Recompute the student's avgScore & quizzesTaken so stats stay accurate.
+  const remaining = await QuizAttempt.find({ userId: studentId }).select('score xpEarned')
+  const avgScore = remaining.length
+    ? Math.round(remaining.reduce((s, a) => s + a.score, 0) / remaining.length)
+    : 0
+  await User.findByIdAndUpdate(studentId, {
+    $inc: { xp: -(attempt.xpEarned || 0), 'stats.quizzesTaken': -1 },
+    $set: { 'stats.avgScore': avgScore },
+  })
+
+  res.status(200).json({
+    status: 'success',
+    message: 'Attempt cleared. Student may now retake this quiz.',
+    data: { quizId, studentId },
+  })
 })

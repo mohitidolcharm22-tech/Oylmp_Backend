@@ -2,7 +2,7 @@ const mongoose = require('mongoose')
 const bcrypt   = require('bcryptjs')
 
 const ROLES    = ['student', 'teacher', 'parent', 'admin']
-const GRADES   = ['Nursery', 'KG', '1', '2', '3', '4', '5']
+const GRADES   = ['Nursery', 'KG', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10']
 
 /* ─────────────────────────────────────────────────────────────────────────────
    User Schema
@@ -74,9 +74,16 @@ const userSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
-    // Teacher's assigned class IDs (future use)
+    // Teacher's assigned class IDs (legacy string array — unused, kept for back-compat)
     classes: {
       type: [String],
+      default: [],
+    },
+    // Class memberships — students belong to classes they're enrolled in;
+    // teachers belong to classes they teach. Source of truth lives on Class.studentIds /
+    // Class.teacherIds; this is a denormalised mirror for fast lookup.
+    classIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Class' }],
       default: [],
     },
     // Parent's children user IDs
@@ -174,6 +181,7 @@ const userSchema = new mongoose.Schema(
 /* ─── Indexes ───────────────────────────────────────────────────────────────── */
 userSchema.index({ role: 1 })
 userSchema.index({ parentId: 1 })
+userSchema.index({ classIds: 1 })
 userSchema.index({ createdAt: -1 })
 
 /* ─── Virtuals ──────────────────────────────────────────────────────────────── */
