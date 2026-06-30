@@ -21,6 +21,11 @@ exports.listModeration = catchAsync(async (req, res) => {
   const filter = {}
   if (status !== 'all') filter.moderationStatus = status
 
+  // Scope to school: super_admin sees all; school_admin/admin see their school only
+  if (req.user.role !== 'super_admin' && req.user.schoolId) {
+    filter.schoolId = req.user.schoolId
+  }
+
   const promises = []
   if (type === 'all' || type === 'quiz') {
     promises.push(
@@ -112,6 +117,12 @@ exports.moderateItem = catchAsync(async (req, res, next) => {
    PLATFORM STATS  — GET /api/v1/admin/stats
    ════════════════════════════════════════════════════════════════════════ */
 exports.getStats = catchAsync(async (req, res) => {
+  // Scope: super_admin sees global stats; others see their school only
+  const isSuperAdmin = req.user.role === 'super_admin'
+  const schoolMatch  = (!isSuperAdmin && req.user.schoolId)
+    ? { schoolId: req.user.schoolId }
+    : {}
+
   // Run all aggregations in parallel.
   const [
     userByRole,
@@ -125,18 +136,19 @@ exports.getStats = catchAsync(async (req, res) => {
   ] = await Promise.all([
     // Users grouped by role + active count
     User.aggregate([
+      { $match: schoolMatch },
       { $group: { _id: '$role', total: { $sum: 1 }, active: { $sum: { $cond: ['$isActive', 1, 0] } } } },
     ]),
 
     // Quiz counts by moderation status
     Quiz.aggregate([
-      { $match: { isActive: true } },
+      { $match: { isActive: true, ...schoolMatch } },
       { $group: { _id: '$moderationStatus', count: { $sum: 1 } } },
     ]),
 
-    Lesson.countDocuments({ isActive: true }),
+    Lesson.countDocuments({ isActive: true, ...schoolMatch }),
 
-    // Total attempts + avg score
+    // Total attempts + avg score (QuizAttempt has no schoolId — join via quiz)
     QuizAttempt.aggregate([
       { $group: { _id: null, count: { $sum: 1 }, avgScore: { $avg: '$score' }, passed: { $sum: { $cond: ['$passed', 1, 0] } } } },
     ]),
@@ -145,6 +157,7 @@ exports.getStats = catchAsync(async (req, res) => {
     User.aggregate([
       { $match: {
           lastActiveDate: { $gte: new Date(Date.now() - 1000 * 60 * 60 * 24 * 180) },
+          ...schoolMatch,
       }},
       { $project: {
           role: 1,

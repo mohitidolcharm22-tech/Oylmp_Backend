@@ -10,6 +10,14 @@ const subjectSchema = new mongoose.Schema(
     grades:      [{ type: String }],   // e.g. ['nursery','1','2','3','4','5']
     isActive:    { type: Boolean, default: true },
     order:       { type: Number, default: 0 },
+    // null = global/shared subject visible to all schools.
+    // Set to a schoolId to make it private to that school.
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } },
 )

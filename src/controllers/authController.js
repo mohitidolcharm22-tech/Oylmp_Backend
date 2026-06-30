@@ -66,6 +66,10 @@ exports.register = catchAsync(async (req, res, next) => {
   if (username) userData.username = username.toLowerCase().trim()
   if (role === 'student' && grade) userData.grade = grade
   if (phone)                       userData.phone = phone
+  // Inherit schoolId from the creating user (admin/teacher creates students)
+  // or from the request body (self-registration with a school code resolved upstream)
+  const schoolId = req.body.schoolId || req.user?.schoolId || null
+  if (schoolId) userData.schoolId = schoolId
 
   const user = await User.create(userData)
 
@@ -143,6 +147,10 @@ exports.listUsers = catchAsync(async (req, res) => {
       { name:  { $regex: search, $options: 'i' } },
       { email: { $regex: search, $options: 'i' } },
     ]
+  }
+  // Scope: super_admin sees all; school_admin/admin see only their school
+  if (req.user.role !== 'super_admin' && req.user.schoolId) {
+    filter.schoolId = req.user.schoolId
   }
   const [users, total] = await Promise.all([
     User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),

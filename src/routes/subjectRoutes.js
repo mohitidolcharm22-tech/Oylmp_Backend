@@ -6,9 +6,9 @@ const router = express.Router()
 
 /* ─── Subjects ──────────────────────────────────────────────────────────── */
 router.get('/',              protect, content.getSubjects)
-router.post('/',             protect, restrictTo('admin', 'teacher'), content.createSubject)
+router.post('/',             protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), content.createSubject)
 router.get('/:id',           protect, content.getSubject)
-router.patch('/:id',         protect, restrictTo('admin', 'teacher'), content.updateSubject)
+router.patch('/:id',         protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), content.updateSubject)
 router.get('/:id/topics',    protect, content.getTopicsBySubject)
 
 module.exports = router

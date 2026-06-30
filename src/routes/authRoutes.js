@@ -110,14 +110,14 @@ router.get('/me', protect, authController.getMe)
  * @desc   List all users (admin only)
  * @access Private/Admin
  */
-router.get('/users', protect, restrictTo('admin'), authController.listUsers)
+router.get('/users', protect, restrictTo('admin', 'school_admin', 'super_admin'), authController.listUsers)
 
 /**
  * @route  PATCH /api/v1/auth/users/:id/toggle-status
  * @desc   Enable / disable a user account (admin only)
  * @access Private/Admin
  */
-router.patch('/users/:id/toggle-status',   protect, restrictTo('admin'), authController.toggleUserStatus)
-router.patch('/users/:id/reset-password',  protect, restrictTo('admin'), authController.resetUserPassword)
+router.patch('/users/:id/toggle-status',   protect, restrictTo('admin', 'school_admin', 'super_admin'), authController.toggleUserStatus)
+router.patch('/users/:id/reset-password',  protect, restrictTo('admin', 'school_admin', 'super_admin'), authController.resetUserPassword)
 
 module.exports = router

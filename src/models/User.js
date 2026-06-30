@@ -1,7 +1,7 @@
 const mongoose = require('mongoose')
 const bcrypt   = require('bcryptjs')
 
-const ROLES    = ['student', 'teacher', 'parent', 'admin']
+const ROLES    = ['student', 'teacher', 'parent', 'admin', 'school_admin', 'super_admin']
 const GRADES   = ['Nursery', 'KG', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10']
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -40,6 +40,15 @@ const userSchema = new mongoose.Schema(
       required: [true, 'Password is required'],
       minlength: [8, 'Password must be at least 8 characters'],
       select: false,   // never returned in queries unless explicitly requested
+    },
+
+    // ── School Tenancy ────────────────────────────────────────────────────────
+    // null = platform-level user (super_admin). All others must have a schoolId.
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      default: null,
+      index: true,
     },
 
     // ── Role & Profile ─────────────────────────────────────────────────────────
@@ -195,10 +204,11 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ role: 1 })
 userSchema.index({ parentId: 1 })
 userSchema.index({ classIds: 1 })
-userSchema.index({ createdAt: -1 })// Leaderboard: students sorted by XP desc — covers the global leaderboard query.
-userSchema.index({ role: 1, isActive: 1, xp: -1 })
+userSchema.index({ createdAt: -1 })
+// Leaderboard: students sorted by XP desc — covers the global leaderboard query.
+userSchema.index({ schoolId: 1, role: 1, isActive: 1, xp: -1 })
 // Students list (teacher dashboard): role + classIds + XP sort.
-userSchema.index({ role: 1, classIds: 1, xp: -1 })
+userSchema.index({ schoolId: 1, role: 1, classIds: 1, xp: -1 })
 /* ─── Virtuals ──────────────────────────────────────────────────────────────── */
 userSchema.virtual('fullName').get(function () {
   return this.name

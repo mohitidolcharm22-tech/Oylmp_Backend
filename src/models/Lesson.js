@@ -13,6 +13,12 @@ const lessonSchema = new mongoose.Schema(
     xp:         { type: Number, default: 50 },
     isActive:   { type: Boolean, default: true },
     createdBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      default: null,
+      index: true,
+    },
     moderationStatus: {
       type: String,
       enum: ['pending', 'approved', 'rejected'],

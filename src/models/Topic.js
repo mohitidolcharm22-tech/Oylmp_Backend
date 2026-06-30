@@ -9,6 +9,12 @@ const topicSchema = new mongoose.Schema(
     order:       { type: Number, default: 0 },
     difficulty:  { type: String, enum: ['easy', 'medium', 'hard'], default: 'easy' },
     isActive:    { type: Boolean, default: true },
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } },
 )

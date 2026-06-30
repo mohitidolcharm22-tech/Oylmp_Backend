@@ -27,6 +27,12 @@ exports.getQuizzes = catchAsync(async (req, res) => {
     filter.title = { $regex: req.query.search, $options: 'i' }
   }
 
+  // Scope to school: show quizzes that are school-private or global (null)
+  if (req.user?.schoolId) {
+    filter.$and = filter.$and || []
+    filter.$and.push({ $or: [{ schoolId: null }, { schoolId: req.user.schoolId }] })
+  }
+
   // Students/parents only see approved content. Teachers see their own
   // pending/rejected plus everyone's approved. Admins see all.
   const role = req.user?.role
@@ -123,6 +129,7 @@ exports.createQuiz = catchAsync(async (req, res) => {
   const quiz = await Quiz.create({
     ...req.body,
     createdBy: req.user._id,
+    schoolId: req.user.schoolId || null,
     moderationStatus,
     moderatedBy: moderationStatus === 'approved' ? req.user._id : undefined,
     moderatedAt: moderationStatus === 'approved' ? new Date() : undefined,

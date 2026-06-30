@@ -63,3 +63,22 @@ exports.restrictTo = (...roles) => (req, res, next) => {
   }
   next()
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   scopeToSchool — injects { schoolId } into req.schoolFilter
+   ● super_admin: no filter (sees all schools)
+   ● everyone else: filters by their own schoolId
+   Use this on any route that should be school-scoped.
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.scopeToSchool = (req, res, next) => {
+  if (req.user.role === 'super_admin') {
+    // Super-admin can optionally pass ?schoolId=xxx to narrow results
+    req.schoolFilter = req.query.schoolId ? { schoolId: req.query.schoolId } : {}
+  } else {
+    if (!req.user.schoolId) {
+      return next(new AppError('Your account is not associated with a school.', 403))
+    }
+    req.schoolFilter = { schoolId: req.user.schoolId }
+  }
+  next()
+}

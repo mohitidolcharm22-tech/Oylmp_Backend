@@ -12,8 +12,13 @@ const { updateStreak, evaluateRules, awardBadges } = require('../utils/gamificat
 /* ── GET /api/v1/subjects ──────────────────────────────────────────────────── */
 exports.getSubjects = catchAsync(async (req, res) => {
   const filter = { isActive: true }
-  if (req.query.grade) filter.grades = req.query.grade
-
+  if (req.query.grade) filter.grades = req.query.grade  // Show subjects that are global (null) OR belong to this school
+  if (req.user?.schoolId) {
+    filter.$or = [
+      { schoolId: null },
+      { schoolId: req.user.schoolId },
+    ]
+  }
   const subjects = await Subject.find(filter).sort('order').lean()
 
   // Attach real topic + quiz counts for each subject
@@ -50,7 +55,10 @@ exports.getSubject = catchAsync(async (req, res, next) => {
 
 /* ── POST /api/v1/subjects  (admin/teacher) ───────────────────────────────── */
 exports.createSubject = catchAsync(async (req, res) => {
-  const subject = await Subject.create(req.body)
+  const subject = await Subject.create({
+    ...req.body,
+    schoolId: req.user?.schoolId || null,
+  })
   res.status(201).json({ status: 'success', data: { subject } })
 })
 
@@ -97,7 +105,10 @@ exports.getTopic = catchAsync(async (req, res, next) => {
 
 /* ── POST /api/v1/topics ──────────────────────────────────────────────────── */
 exports.createTopic = catchAsync(async (req, res) => {
-  const topic = await Topic.create(req.body)
+  const topic = await Topic.create({
+    ...req.body,
+    schoolId: req.user?.schoolId || null,
+  })
   res.status(201).json({ status: 'success', data: { topic } })
 })
 
@@ -111,6 +122,10 @@ exports.updateTopic = catchAsync(async (req, res, next) => {
 /* ── GET /api/v1/topics/:id/lessons ──────────────────────────────────────── */
 exports.getLessonsByTopic = catchAsync(async (req, res) => {
   const filter = { topicId: req.params.id, isActive: true }
+  // Scope to school: show lessons that are school-private or global (null)
+  if (req.user?.schoolId) {
+    filter.$and = [{ $or: [{ schoolId: null }, { schoolId: req.user.schoolId }] }]
+  }
   // Students/parents only see approved lessons. Teachers see their own pending
   // plus everyone's approved. Admins see all.
   const role = req.user?.role
@@ -142,6 +157,7 @@ exports.createLesson = catchAsync(async (req, res) => {
   const lesson = await Lesson.create({
     ...req.body,
     createdBy: req.user._id,
+    schoolId: req.user.schoolId || null,
     moderationStatus,
     moderatedBy: moderationStatus === 'approved' ? req.user._id : undefined,
     moderatedAt: moderationStatus === 'approved' ? new Date() : undefined,

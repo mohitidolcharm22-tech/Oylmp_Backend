@@ -9,22 +9,22 @@ const router = express.Router()
 router.get('/notifications',                  protect, uc.getNotifications)
 router.patch('/notifications/mark-all-read',  protect, uc.markAllRead)
 router.patch('/notifications/:id/read',       protect, uc.markRead)
-router.post('/notifications/broadcast',       protect, restrictTo('admin', 'teacher'), uc.broadcastNotification)
+router.post('/notifications/broadcast',       protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), uc.broadcastNotification)
 
 /* ─── Feedback ──────────────────────────────────────────────────────────── */
 router.post('/feedback',       protect, uc.createFeedback)
-router.get('/feedback',        protect, restrictTo('admin'), uc.getFeedback)
-router.patch('/feedback/:id',  protect, restrictTo('admin'), uc.updateFeedback)
+router.get('/feedback',        protect, restrictTo('admin', 'school_admin', 'super_admin'), uc.getFeedback)
+router.patch('/feedback/:id',  protect, restrictTo('admin', 'school_admin', 'super_admin'), uc.updateFeedback)
 
 /* ─── Progress ───────────────────────────────────────────────────────────── */
 router.get('/me/progress',         protect, uc.getStudentProgress)
 router.get('/me/next',             protect, restrictTo('student'), content.getNextUp)
 router.get('/me/bookmarks',        protect, restrictTo('student'), content.getBookmarks)
-router.get('/students',            protect, restrictTo('admin', 'teacher'), uc.getStudents)
+router.get('/students',            protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), uc.getStudents)
 router.get('/my-children',         protect, restrictTo('parent'), uc.getMyChildren)
 router.post('/link-child',         protect, restrictTo('parent'), uc.linkChild)
-router.get('/:id/progress',        protect, restrictTo('admin', 'teacher', 'parent'), uc.getStudentProgressById)
-router.post('/:id/badges',         protect, restrictTo('admin', 'teacher'), uc.awardBadge)
-router.delete('/:id/badges/:badgeId', protect, restrictTo('admin', 'teacher'), uc.revokeBadge)
+router.get('/:id/progress',        protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher', 'parent'), uc.getStudentProgressById)
+router.post('/:id/badges',         protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), uc.awardBadge)
+router.delete('/:id/badges/:badgeId', protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), uc.revokeBadge)
 
 module.exports = router

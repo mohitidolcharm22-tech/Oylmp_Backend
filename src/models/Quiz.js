@@ -66,6 +66,12 @@ const quizSchema = new mongoose.Schema(
     moderatedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     moderatedAt:   { type: Date },
     moderationNote:{ type: String, trim: true },
+    schoolId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'School',
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } },
 )

@@ -4,7 +4,7 @@ const { protect, restrictTo } = require('../middleware/auth')
 
 const router = express.Router()
 
-router.use(protect, restrictTo('admin'))
+router.use(protect, restrictTo('admin', 'school_admin', 'super_admin'))
 
 router.get('/stats',                       admin.getStats)
 router.get('/moderation',                  admin.listModeration)

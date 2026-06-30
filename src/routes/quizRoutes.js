@@ -16,8 +16,8 @@ router.patch('/:id',             protect, restrictTo('admin', 'teacher'), quiz.u
 router.delete('/:id',            protect, restrictTo('admin', 'teacher'), quiz.deleteQuiz)
 router.post('/:id/submit',       protect, restrictTo('student'), quiz.submitQuiz)
 router.get('/:id/result',        protect, restrictTo('student'), quiz.getQuizResult)
-router.get('/:id/attempts',      protect, restrictTo('admin', 'teacher'), quiz.getQuizAttempts)
-router.delete('/:id/attempts/:studentId', protect, restrictTo('admin', 'teacher'), quiz.reissueQuiz)
+router.get('/:id/attempts',      protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), quiz.getQuizAttempts)
+router.delete('/:id/attempts/:studentId', protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'), quiz.reissueQuiz)
 router.post('/:id/bookmark',     protect, restrictTo('student'), quiz.addBookmark)
 router.delete('/:id/bookmark',   protect, restrictTo('student'), quiz.removeBookmark)
 

@@ -4,7 +4,7 @@ const { protect, restrictTo } = require('../middleware/auth')
 
 const router = express.Router()
 
-router.use(protect, restrictTo('admin', 'teacher'))
+router.use(protect, restrictTo('admin', 'school_admin', 'super_admin', 'teacher'))
 
 router.get('/',     cc.listClasses)
 router.post('/',    cc.createClass)
