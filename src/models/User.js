@@ -131,6 +131,11 @@ const userSchema = new mongoose.Schema(
       type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Lesson' }],
       default: [],
     },
+    // Quizzes a student has bookmarked / favourited
+    bookmarks: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Quiz' }],
+      default: [],
+    },
 
     // ── Stats ─────────────────────────────────────────────────────────────────
     stats: {
@@ -162,6 +167,14 @@ const userSchema = new mongoose.Schema(
       type: String,
       select: false,
     },
+    passwordResetToken: {
+      type: String,
+      select: false,
+    },
+    passwordResetExpires: {
+      type: Date,
+      select: false,
+    },
   },
   {
     timestamps: true,              // createdAt, updatedAt
@@ -182,8 +195,10 @@ const userSchema = new mongoose.Schema(
 userSchema.index({ role: 1 })
 userSchema.index({ parentId: 1 })
 userSchema.index({ classIds: 1 })
-userSchema.index({ createdAt: -1 })
-
+userSchema.index({ createdAt: -1 })// Leaderboard: students sorted by XP desc — covers the global leaderboard query.
+userSchema.index({ role: 1, isActive: 1, xp: -1 })
+// Students list (teacher dashboard): role + classIds + XP sort.
+userSchema.index({ role: 1, classIds: 1, xp: -1 })
 /* ─── Virtuals ──────────────────────────────────────────────────────────────── */
 userSchema.virtual('fullName').get(function () {
   return this.name

@@ -74,6 +74,31 @@ router.post('/login', loginRules, authController.login)
 router.post('/logout', authController.logout)
 
 /**
+ * @route  POST /api/v1/auth/refresh
+ * @desc   Issue a new access token using the refresh-token cookie
+ * @access Public (relies on HttpOnly cookie)
+ */
+router.post('/refresh', authController.refresh)
+
+/**
+ * @route  POST /api/v1/auth/send-otp
+ * @route  POST /api/v1/auth/verify-otp
+ * @desc   Email verification via 6-digit one-time code
+ * @access Public
+ */
+router.post('/send-otp',   authController.sendOtp)
+router.post('/verify-otp', authController.verifyOtp)
+
+/**
+ * @route  POST /api/v1/auth/forgot-password
+ * @route  POST /api/v1/auth/reset-password/:token
+ * @desc   Self-service password reset
+ * @access Public
+ */
+router.post('/forgot-password',         authController.forgotPassword)
+router.post('/reset-password/:token',   authController.resetPassword)
+
+/**
  * @route  GET /api/v1/auth/me
  * @desc   Get currently authenticated user
  * @access Private

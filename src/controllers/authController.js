@@ -1,3 +1,5 @@
+const crypto                = require('crypto')
+const jwt                   = require('jsonwebtoken')
 const { validationResult } = require('express-validator')
 const User                  = require('../models/User')
 const AppError              = require('../utils/AppError')
@@ -117,7 +119,9 @@ exports.logout = (req, res) => {
    GET /api/v1/auth/me   (requires auth middleware)
    ───────────────────────────────────────────────────────────────────────────── */
 exports.getMe = catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id).populate('teacherBadges.awardedBy', 'name')
+  const user = await User.findById(req.user.id)
+    .populate('teacherBadges.awardedBy', 'name')
+    .lean()
   res.status(200).json({ status: 'success', data: { user } })
 })
 
@@ -141,7 +145,7 @@ exports.listUsers = catchAsync(async (req, res) => {
     ]
   }
   const [users, total] = await Promise.all([
-    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
     User.countDocuments(filter),
   ])
   res.status(200).json({
@@ -190,4 +194,131 @@ exports.toggleUserStatus = catchAsync(async (req, res, next) => {
     message: `User has been ${user.isActive ? 'enabled' : 'disabled'}.`,
     data: { user },
   })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   POST /api/v1/auth/refresh
+   Issues a new access token from a valid refresh-token cookie. The cookie is
+   set by sendAuthResponse() on login/register.
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.refresh = catchAsync(async (req, res, next) => {
+  const token = req.cookies?.refreshToken
+  if (!token) return next(new AppError('No refresh token. Please log in again.', 401))
+
+  let decoded
+  try {
+    decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET)
+  } catch {
+    return next(new AppError('Invalid or expired refresh token. Please log in again.', 401))
+  }
+  if (decoded.type !== 'refresh') {
+    return next(new AppError('Invalid token type.', 401))
+  }
+
+  const user = await User.findById(decoded.sub).select('+passwordChangedAt')
+  if (!user || !user.isActive) {
+    return next(new AppError('Account no longer available.', 401))
+  }
+  if (user.changedPasswordAfter(decoded.iat)) {
+    return next(new AppError('Password was changed. Please log in again.', 401))
+  }
+
+  const accessToken = signAccessToken(user._id)
+  // Rotate the refresh token so a stolen one has limited shelf-life.
+  sendRefreshCookie(res, signRefreshToken(user._id))
+
+  res.status(200).json({ status: 'success', accessToken })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   POST /api/v1/auth/send-otp        body: { email }
+   POST /api/v1/auth/verify-otp      body: { email, code }
+   Generates a 6-digit code, stores it on the user with a 10-min expiry.
+   In dev/test the code is returned in the response so QA can verify without
+   email infra. In production it should be sent via your mailer of choice.
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.sendOtp = catchAsync(async (req, res, next) => {
+  const email = (req.body.email || '').trim().toLowerCase()
+  if (!email) return next(new AppError('Email is required.', 400))
+
+  const user = await User.findOne({ email })
+  if (!user) return next(new AppError('No account with that email.', 404))
+
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  user.otp = { code, expiresAt: new Date(Date.now() + 10 * 60 * 1000) }
+  await user.save({ validateBeforeSave: false })
+
+  // TODO: integrate mail provider. For now log + (dev only) return.
+  console.log(`[OTP] ${email} → ${code}`)
+
+  const payload = { status: 'success', message: 'OTP sent.' }
+  if (process.env.NODE_ENV !== 'production') payload.devCode = code
+  res.status(200).json(payload)
+})
+
+exports.verifyOtp = catchAsync(async (req, res, next) => {
+  const email = (req.body.email || '').trim().toLowerCase()
+  const { code } = req.body
+  if (!email || !code) return next(new AppError('Email and code are required.', 400))
+
+  const user = await User.findOne({ email }).select('+otp.code +otp.expiresAt')
+  if (!user || !user.otp?.code) return next(new AppError('Invalid or expired code.', 400))
+  if (user.otp.expiresAt < new Date()) return next(new AppError('Code has expired.', 400))
+  if (user.otp.code !== code)          return next(new AppError('Incorrect code.', 400))
+
+  user.isEmailVerified = true
+  user.otp = { code: undefined, expiresAt: undefined }
+  await user.save({ validateBeforeSave: false })
+
+  res.status(200).json({ status: 'success', message: 'Email verified.' })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   POST /api/v1/auth/forgot-password   body: { email }
+   POST /api/v1/auth/reset-password/:token   body: { newPassword }
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.forgotPassword = catchAsync(async (req, res, next) => {
+  const email = (req.body.email || '').trim().toLowerCase()
+  if (!email) return next(new AppError('Email is required.', 400))
+
+  const user = await User.findOne({ email })
+  // Don't reveal whether the email exists — respond uniformly.
+  if (!user) {
+    return res.status(200).json({ status: 'success', message: 'If the email exists, a reset link has been sent.' })
+  }
+
+  const rawToken    = crypto.randomBytes(32).toString('hex')
+  const hashedToken = crypto.createHash('sha256').update(rawToken).digest('hex')
+
+  user.passwordResetToken   = hashedToken
+  user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000)   // 1 hour
+  await user.save({ validateBeforeSave: false })
+
+  // TODO: email rawToken via a link like https://app/reset/<rawToken>
+  console.log(`[RESET] ${email} → ${rawToken}`)
+
+  const payload = { status: 'success', message: 'If the email exists, a reset link has been sent.' }
+  if (process.env.NODE_ENV !== 'production') payload.devToken = rawToken
+  res.status(200).json(payload)
+})
+
+exports.resetPassword = catchAsync(async (req, res, next) => {
+  const { newPassword } = req.body
+  if (!newPassword || newPassword.length < 8) {
+    return next(new AppError('New password must be at least 8 characters.', 400))
+  }
+
+  const hashedToken = crypto.createHash('sha256').update(req.params.token).digest('hex')
+  const user = await User.findOne({
+    passwordResetToken:   hashedToken,
+    passwordResetExpires: { $gt: new Date() },
+  }).select('+password')
+  if (!user) return next(new AppError('Reset link is invalid or has expired.', 400))
+
+  user.password             = newPassword
+  user.passwordResetToken   = undefined
+  user.passwordResetExpires = undefined
+  await user.save()
+
+  res.status(200).json({ status: 'success', message: 'Password reset successful. Please log in.' })
 })

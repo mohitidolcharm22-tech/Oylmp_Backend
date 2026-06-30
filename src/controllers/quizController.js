@@ -4,6 +4,8 @@ const User        = require('../models/User')
 const Class       = require('../models/Class')
 const AppError    = require('../utils/AppError')
 const catchAsync  = require('../utils/catchAsync')
+const { notify }  = require('../utils/notify')
+const { updateStreak, evaluateRules, awardBadges } = require('../utils/gamification')
 
 // Fisher–Yates shuffle (in-place, returns the array).
 function shuffle(arr) {
@@ -25,19 +27,37 @@ exports.getQuizzes = catchAsync(async (req, res) => {
     filter.title = { $regex: req.query.search, $options: 'i' }
   }
 
-  const rawQuizzes = await Quiz.find(filter)
-    .populate('topicId',   'name icon')
-    .populate('subjectId', 'name icon color')
-    .sort({ createdAt: -1 })
-    .lean()
+  // For students, restrict to quizzes that are either un-assigned (open) or
+  // explicitly assigned to this user / their class. Teachers/admins see all.
+  if (req.user?.role === 'student') {
+    const classIds = req.user.classIds || []
+    filter.$and = [
+      { $or: [
+        { assignedTo:       { $in: [req.user._id] } },
+        { assignedTo:       { $size: 0 } },
+      ]},
+      { $or: [
+        { assignedClassIds: { $in: classIds } },
+        { assignedClassIds: { $size: 0 } },
+      ]},
+    ]
+  }
 
-  // Add totalQuestions count and strip the full questions array from the list view
-  const quizzes = rawQuizzes.map(({ questions, ...rest }) => ({
-    ...rest,
-    totalQuestions: questions?.length || 0,
-  }))
+  // Project away the heavy questions[] array — we only need its length.
+  // Single aggregation: $addFields the count, $project drops questions, sort,
+  // then mongoose.populate() resolves topic/subject refs on the plain docs.
+  const rawQuizzes = await Quiz.aggregate([
+    { $match: filter },
+    { $addFields: { totalQuestions: { $size: { $ifNull: ['$questions', []] } } } },
+    { $project: { questions: 0 } },
+    { $sort: { createdAt: -1 } },
+  ])
+  await Quiz.populate(rawQuizzes, [
+    { path: 'topicId',   select: 'name icon' },
+    { path: 'subjectId', select: 'name icon color' },
+  ])
 
-  res.status(200).json({ status: 'success', results: quizzes.length, data: { quizzes } })
+  res.status(200).json({ status: 'success', results: rawQuizzes.length, data: { quizzes: rawQuizzes } })
 })
 
 /* ── GET /api/v1/quizzes/:id ─────────────────────────────────────────────── */
@@ -146,10 +166,14 @@ exports.submitQuiz = catchAsync(async (req, res, next) => {
   const quiz = await Quiz.findById(req.params.id)
   if (!quiz || !quiz.isActive) return next(new AppError('Quiz not found.', 404))
 
-  // Only one attempt per student per quiz
+  // Test quizzes are one-shot. Practice & flashcard quizzes are retake-able:
+  // we just replace the previous attempt so stats stay clean.
   const existing = await QuizAttempt.findOne({ userId: req.user._id, quizId: quiz._id })
   if (existing) {
-    return next(new AppError('You have already attempted this quiz.', 409))
+    if (quiz.quizType === 'test') {
+      return next(new AppError('You have already attempted this quiz.', 409))
+    }
+    await QuizAttempt.deleteOne({ _id: existing._id })
   }
 
   const { answers = [], timeTaken } = req.body
@@ -193,10 +217,25 @@ exports.submitQuiz = catchAsync(async (req, res, next) => {
   ])
   const avgScore = agg ? Math.round(agg.avg) : score
 
-  await User.findByIdAndUpdate(req.user._id, {
-    $inc: { xp: xpEarned, 'stats.quizzesTaken': 1 },
-    $set: { 'stats.avgScore': avgScore },
+  // Load the freshest user doc so we can update streak + badges in one save.
+  const user = await User.findById(req.user._id)
+  if (!existing) user.stats.quizzesTaken = (user.stats.quizzesTaken || 0) + 1
+  user.stats.avgScore = avgScore
+  user.xp = (user.xp || 0) + xpEarned
+  user.level = Math.max(1, Math.floor(user.xp / 500) + 1)
+  updateStreak(user)
+  await user.save({ validateBeforeSave: false })
+
+  // Side-effects: notification + badge rules (do not block on failure).
+  await notify(user._id, {
+    title:   passed ? 'Quiz passed!' : 'Quiz completed',
+    message: `${quiz.title}: ${score}% (+${xpEarned} XP)`,
+    type:    passed ? 'achievement' : 'quiz',
+    icon:    passed ? '🎉' : '📝',
+    link:    `/quizzes/${quiz._id}/result`,
   })
+  const earned = await evaluateRules({ user, event: 'quiz_submitted', quiz, attempt })
+  await awardBadges(user, earned)
 
   // Return full quiz with explanations for result page
   res.status(200).json({
@@ -206,6 +245,8 @@ exports.submitQuiz = catchAsync(async (req, res, next) => {
       score,
       passed,
       xpEarned,
+      newBadges: earned,
+      streak: user.streak,
       quiz: {
         title: quiz.title,
         passingScore: quiz.passingScore,
@@ -224,9 +265,34 @@ exports.getQuizResult = catchAsync(async (req, res, next) => {
 })
 
 /* ── GET /api/v1/quizzes/leaderboard ─────────────────────────────────────── */
+// Optional scoping: ?scope=grade  → only students in the caller's (or query's)
+// grade. ?scope=class&classId=...  → only students in that class. Default is
+// global. Teachers/admins may pass any grade/classId; students are forced into
+// their own.
 exports.getLeaderboard = catchAsync(async (req, res) => {
-  const leaders = await User.find({ role: 'student', isActive: true })
-    .select('name xp level avatarColor stats streak')
+  const filter = { role: 'student', isActive: true }
+
+  const scope = req.query.scope
+  if (scope === 'grade') {
+    const grade = req.user.role === 'student'
+      ? req.user.grade
+      : (req.query.grade || req.user.grade)
+    if (grade) filter.grade = String(grade)
+  } else if (scope === 'class') {
+    const requested = req.query.classId
+    if (req.user.role === 'student') {
+      const myClassIds = (req.user.classIds || []).map(String)
+      if (requested && !myClassIds.includes(String(requested))) {
+        return res.status(200).json({ status: 'success', results: 0, data: { leaderboard: [] } })
+      }
+      filter.classIds = { $in: req.user.classIds || [] }
+    } else if (requested) {
+      filter.classIds = requested
+    }
+  }
+
+  const leaders = await User.find(filter)
+    .select('name xp level avatarColor stats streak grade')
     .sort({ xp: -1 })
     .limit(50)
     .lean()
@@ -237,20 +303,50 @@ exports.getLeaderboard = catchAsync(async (req, res) => {
 
 /* ── GET /api/v1/quizzes/my-attempts  (student) ──────────────────────────── */
 exports.getMyAttempts = catchAsync(async (req, res) => {
-  const attempts = await QuizAttempt.find({ userId: req.user._id })
-    .populate({ path: 'quizId', select: 'title icon difficulty xpReward subjectId topicId', populate: { path: 'topicId', select: '_id name' } })
-    .sort({ completedAt: -1 })
-    .lean()
-  res.status(200).json({ status: 'success', results: attempts.length, data: { attempts } })
+  const page  = Math.max(parseInt(req.query.page, 10) || 1, 1)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200)
+  const skip  = (page - 1) * limit
+
+  const filter = { userId: req.user._id }
+  const [attempts, total] = await Promise.all([
+    QuizAttempt.find(filter)
+      .populate({ path: 'quizId', select: 'title icon difficulty xpReward subjectId topicId', populate: { path: 'topicId', select: '_id name' } })
+      .sort({ completedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    QuizAttempt.countDocuments(filter),
+  ])
+  res.status(200).json({
+    status: 'success',
+    results: attempts.length,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    data: { attempts },
+  })
 })
 
 /* ── GET /api/v1/quizzes/:quizId/attempts  (teacher — all students) ──────── */
 exports.getQuizAttempts = catchAsync(async (req, res) => {
-  const attempts = await QuizAttempt.find({ quizId: req.params.id })
-    .populate('userId', 'name email grade avatarColor')
-    .sort({ completedAt: -1 })
-    .lean()
-  res.status(200).json({ status: 'success', results: attempts.length, data: { attempts } })
+  const page  = Math.max(parseInt(req.query.page, 10) || 1, 1)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200)
+  const skip  = (page - 1) * limit
+
+  const filter = { quizId: req.params.id }
+  const [attempts, total] = await Promise.all([
+    QuizAttempt.find(filter)
+      .populate('userId', 'name email grade avatarColor')
+      .sort({ completedAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    QuizAttempt.countDocuments(filter),
+  ])
+  res.status(200).json({
+    status: 'success',
+    results: attempts.length,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    data: { attempts },
+  })
 })
 
 /* ── DELETE /api/v1/quizzes/:id/attempts/:studentId  (teacher / admin) ──── */
@@ -280,11 +376,12 @@ exports.reissueQuiz = catchAsync(async (req, res, next) => {
 
   await QuizAttempt.deleteOne({ _id: attempt._id })
 
-  // Recompute the student's avgScore & quizzesTaken so stats stay accurate.
-  const remaining = await QuizAttempt.find({ userId: studentId }).select('score xpEarned')
-  const avgScore = remaining.length
-    ? Math.round(remaining.reduce((s, a) => s + a.score, 0) / remaining.length)
-    : 0
+  // Recompute avg via aggregation — avoids loading every attempt into memory.
+  const [agg] = await QuizAttempt.aggregate([
+    { $match: { userId: student._id } },
+    { $group: { _id: null, avg: { $avg: '$score' } } },
+  ])
+  const avgScore = agg ? Math.round(agg.avg) : 0
   await User.findByIdAndUpdate(studentId, {
     $inc: { xp: -(attempt.xpEarned || 0), 'stats.quizzesTaken': -1 },
     $set: { 'stats.avgScore': avgScore },
@@ -295,4 +392,64 @@ exports.reissueQuiz = catchAsync(async (req, res, next) => {
     message: 'Attempt cleared. Student may now retake this quiz.',
     data: { quizId, studentId },
   })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Bookmarks — students can favourite quizzes for quick access.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* POST /api/v1/quizzes/:id/bookmark */
+exports.addBookmark = catchAsync(async (req, res, next) => {
+  const exists = await Quiz.exists({ _id: req.params.id, isActive: true })
+  if (!exists) return next(new AppError('Quiz not found.', 404))
+
+  await User.findByIdAndUpdate(req.user._id, { $addToSet: { bookmarks: req.params.id } })
+  res.status(200).json({ status: 'success', message: 'Quiz bookmarked.' })
+})
+
+/* DELETE /api/v1/quizzes/:id/bookmark */
+exports.removeBookmark = catchAsync(async (req, res) => {
+  await User.findByIdAndUpdate(req.user._id, { $pull: { bookmarks: req.params.id } })
+  res.status(200).json({ status: 'success', message: 'Bookmark removed.' })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/v1/quizzes/review/wrong-answers
+   Lists questions the student got wrong across all their attempts, with the
+   correct answer + explanation attached for review.
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.getWrongAnswers = catchAsync(async (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200)
+
+  const attempts = await QuizAttempt.find({ userId: req.user._id })
+    .populate('quizId', 'title icon questions subjectId topicId')
+    .sort({ completedAt: -1 })
+    .lean()
+
+  const items = []
+  for (const attempt of attempts) {
+    const quiz = attempt.quizId
+    if (!quiz) continue
+    const qIndex = new Map(quiz.questions.map(q => [String(q._id), q]))
+    for (const a of attempt.answers) {
+      if (a.correct) continue
+      const q = qIndex.get(String(a.questionId))
+      if (!q) continue
+      items.push({
+        attemptId:     attempt._id,
+        completedAt:   attempt.completedAt,
+        quiz:          { _id: quiz._id, title: quiz.title, icon: quiz.icon },
+        questionId:    q._id,
+        questionText:  q.text,
+        questionType:  q.type,
+        yourAnswer:    a.selected,
+        correctAnswer: q.correctAnswer,
+        explanation:   q.explanation || '',
+      })
+      if (items.length >= limit) break
+    }
+    if (items.length >= limit) break
+  }
+
+  res.status(200).json({ status: 'success', results: items.length, data: { items } })
 })

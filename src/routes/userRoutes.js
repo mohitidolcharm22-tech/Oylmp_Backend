@@ -1,5 +1,6 @@
 const express = require('express')
 const uc = require('../controllers/userController')
+const content = require('../controllers/contentController')
 const { protect, restrictTo } = require('../middleware/auth')
 
 const router = express.Router()
@@ -16,6 +17,8 @@ router.patch('/feedback/:id',  protect, restrictTo('admin'), uc.updateFeedback)
 
 /* ─── Progress ───────────────────────────────────────────────────────────── */
 router.get('/me/progress',         protect, uc.getStudentProgress)
+router.get('/me/next',             protect, restrictTo('student'), content.getNextUp)
+router.get('/me/bookmarks',        protect, restrictTo('student'), content.getBookmarks)
 router.get('/students',            protect, restrictTo('admin', 'teacher'), uc.getStudents)
 router.get('/my-children',         protect, restrictTo('parent'), uc.getMyChildren)
 router.post('/link-child',         protect, restrictTo('parent'), uc.linkChild)

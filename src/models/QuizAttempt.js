@@ -16,5 +16,9 @@ const quizAttemptSchema = new mongoose.Schema(
 )
 
 quizAttemptSchema.index({ userId: 1, quizId: 1 })
+// Supports my-attempts list sorted by completedAt desc, and the
+// passed-count aggregation used by badge rules.
+quizAttemptSchema.index({ userId: 1, completedAt: -1 })
+quizAttemptSchema.index({ userId: 1, passed: 1 })
 
 module.exports = mongoose.model('QuizAttempt', quizAttemptSchema)

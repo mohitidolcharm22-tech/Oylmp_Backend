@@ -1,6 +1,7 @@
 const Notification = require('../models/Notification')
 const Feedback     = require('../models/Feedback')
 const User         = require('../models/User')
+const QuizAttempt  = require('../models/QuizAttempt')
 const AppError     = require('../utils/AppError')
 const catchAsync   = require('../utils/catchAsync')
 
@@ -61,11 +62,19 @@ exports.getFeedback = catchAsync(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean()
 
+  // Compute stats in a single pass (was O(n²) — filter().length was called
+  // inside every reduce step).
+  let open = 0, resolved = 0, ratingSum = 0, ratingCount = 0
+  for (const f of feedback) {
+    if (f.status === 'open')     open++
+    if (f.status === 'resolved') resolved++
+    if (f.rating) { ratingSum += f.rating; ratingCount++ }
+  }
   const stats = {
-    total:    feedback.length,
-    open:     feedback.filter(f => f.status === 'open').length,
-    resolved: feedback.filter(f => f.status === 'resolved').length,
-    avgRating: feedback.filter(f => f.rating).reduce((s, f, _, a) => s + f.rating / a.filter(x => x.rating).length, 0) || 0,
+    total:     feedback.length,
+    open,
+    resolved,
+    avgRating: ratingCount ? ratingSum / ratingCount : 0,
   }
 
   res.status(200).json({ status: 'success', data: { feedback, stats } })
@@ -86,7 +95,6 @@ exports.updateFeedback = catchAsync(async (req, res, next) => {
 
 /* GET /api/v1/users/me/progress */
 exports.getStudentProgress = catchAsync(async (req, res, next) => {
-  const QuizAttempt = require('../models/QuizAttempt')
   const userId = req.user._id
 
   const user = await User.findById(userId)
@@ -105,12 +113,11 @@ exports.getStudentProgress = catchAsync(async (req, res, next) => {
 
 /* GET /api/v1/users/:id/progress  (parent/teacher/admin) */
 exports.getStudentProgressById = catchAsync(async (req, res, next) => {
-  const QuizAttempt = require('../models/QuizAttempt')
-
   const user = await User.findById(req.params.id)
     .select('name xp level streak stats badges teacherBadges role grade classIds')
     .populate('teacherBadges.awardedBy', 'name')
     .populate('classIds', 'name grade section')
+    .lean()
   if (!user) return next(new AppError('User not found.', 404))
 
   // Scope checks — admin sees all; teacher must share a class; parent must own.
@@ -141,8 +148,6 @@ exports.getStudentProgressById = catchAsync(async (req, res, next) => {
 // Optional ?classId=... narrows further (must still pass the ownership check
 // for teachers).
 exports.getStudents = catchAsync(async (req, res) => {
-  const QuizAttempt = require('../models/QuizAttempt')
-
   const filter = { role: 'student', isActive: true }
 
   // When `available=true`, teachers can see every active student so they can
@@ -202,8 +207,6 @@ exports.getStudents = catchAsync(async (req, res) => {
 
 /* GET /api/v1/users/my-children */
 exports.getMyChildren = catchAsync(async (req, res) => {
-  const QuizAttempt = require('../models/QuizAttempt')
-
   const parent = await User.findById(req.user._id).select('children').lean()
   const childIds = (parent?.children || []).map(id => id)
   if (!childIds.length) return res.status(200).json({ status: 'success', data: { children: [] } })

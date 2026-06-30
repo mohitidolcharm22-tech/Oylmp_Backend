@@ -14,6 +14,7 @@ if (missing.length) {
 const express        = require('express')
 const helmet         = require('helmet')
 const cors           = require('cors')
+const compression    = require('compression')
 const morgan         = require('morgan')
 const rateLimit      = require('express-rate-limit')
 const cookieParser   = require('cookie-parser')
@@ -28,6 +29,7 @@ const quizRoutes     = require('./routes/quizRoutes')
 const userRoutes     = require('./routes/userRoutes')
 const badgeRoutes    = require('./routes/badgeRoutes')
 const classRoutes    = require('./routes/classRoutes')
+const searchRoutes   = require('./routes/searchRoutes')
 const errorHandler   = require('./middleware/errorHandler')
 const AppError       = require('./utils/AppError')
 
@@ -91,6 +93,7 @@ const apiLimiter = rateLimit({
 /* ─── Body parsing ─────────────────────────────────────────────────────────── */
 // Pre-flight OPTIONS must use the same CORS options (not the default wildcard)
 app.options('*', cors(corsOptions))
+app.use(compression())
 app.use(express.json({ limit: '10kb' }))
 app.use(express.urlencoded({ extended: true, limit: '10kb' }))
 app.use(cookieParser())
@@ -106,14 +109,22 @@ app.get('/api/v1/health', (req, res) => {
 })
 
 /* ─── Routes ───────────────────────────────────────────────────────────────── */
+// Short private cache for catalogue-style reads. 60s shaves the dashboard
+// fan-out without making freshly created subjects/topics invisible for long.
+const shortCache = (req, res, next) => {
+  if (req.method === 'GET') res.set('Cache-Control', 'private, max-age=60')
+  next()
+}
+
 app.use('/api/v1/auth',     authLimiter, authRoutes)
-app.use('/api/v1/subjects', apiLimiter, subjectRoutes)
-app.use('/api/v1/topics',   apiLimiter, topicRoutes)
+app.use('/api/v1/subjects', apiLimiter, shortCache, subjectRoutes)
+app.use('/api/v1/topics',   apiLimiter, shortCache, topicRoutes)
 app.use('/api/v1/lessons',  apiLimiter, lessonRoutes)
 app.use('/api/v1/quizzes',  apiLimiter, quizRoutes)
 app.use('/api/v1/users',    apiLimiter, userRoutes)
-app.use('/api/v1/badges',   apiLimiter, badgeRoutes)
+app.use('/api/v1/badges',   apiLimiter, shortCache, badgeRoutes)
 app.use('/api/v1/classes',  apiLimiter, classRoutes)
+app.use('/api/v1/search',   apiLimiter, searchRoutes)
 
 /* ─── 404 catch-all ────────────────────────────────────────────────────────── */
 app.all('*', (req, res, next) => {

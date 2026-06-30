@@ -3,8 +3,11 @@ const Topic   = require('../models/Topic')
 const Lesson  = require('../models/Lesson')
 const Quiz    = require('../models/Quiz')
 const User        = require('../models/User')
+const QuizAttempt = require('../models/QuizAttempt')
 const AppError    = require('../utils/AppError')
 const catchAsync  = require('../utils/catchAsync')
+const { notify }  = require('../utils/notify')
+const { updateStreak, evaluateRules, awardBadges } = require('../utils/gamification')
 
 /* ── GET /api/v1/subjects ──────────────────────────────────────────────────── */
 exports.getSubjects = catchAsync(async (req, res) => {
@@ -141,29 +144,44 @@ exports.deleteLesson = catchAsync(async (req, res, next) => {
 })
 
 /* ── POST /api/v1/lessons/:id/complete  (student marks lesson done) ──────── */
-exports.completeLesson = catchAsync(async (req, res) => {
+exports.completeLesson = catchAsync(async (req, res, next) => {
   const lessonId = req.params.id
   const lesson = await Lesson.findById(lessonId)
-  if (!lesson) return res.status(404).json({ status: 'fail', message: 'Lesson not found' })
+  if (!lesson) return next(new AppError('Lesson not found.', 404))
 
   const user = await User.findById(req.user._id)
   const alreadyDone = user.completedLessons.some(id => id.toString() === lessonId)
 
+  let xpReward = 0
   if (!alreadyDone) {
     user.completedLessons.push(lessonId)
     user.stats.lessonsCompleted = user.completedLessons.length
-    const xpReward = lesson.xp || 0
+    xpReward = lesson.xp || 0
     if (xpReward > 0) {
       user.xp = (user.xp || 0) + xpReward
       // Level up: 500 XP per level (matches the frontend formula).
       user.level = Math.max(1, Math.floor(user.xp / 500) + 1)
     }
+    updateStreak(user)
     await user.save({ validateBeforeSave: false })
+
+    await notify(user._id, {
+      title:   'Lesson complete',
+      message: `${lesson.title} (+${xpReward} XP)`,
+      type:    'lesson',
+      icon:    '📖',
+      link:    `/lessons/${lesson._id}`,
+    })
+    const earned = await evaluateRules({ user, event: 'lesson_completed', lesson })
+    await awardBadges(user, earned)
   }
 
   res.status(200).json({
     status: 'success',
     data: {
+      alreadyDone,
+      xpEarned: alreadyDone ? 0 : xpReward,
+      streak:   user.streak,
       completedLessons: user.completedLessons,
       user: {
         xp:    user.xp,
@@ -173,4 +191,99 @@ exports.completeLesson = catchAsync(async (req, res) => {
       },
     },
   })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/v1/users/me/next
+   Returns the next incomplete lesson + next unattempted quiz for the student.
+   Used by dashboards to render a "Continue learning" tile without the client
+   having to walk every subject/topic.
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.getNextUp = catchAsync(async (req, res) => {
+  // protect() projects completedLessons off req.user — fetch just what we need.
+  const me = await User.findById(req.user._id).select('grade completedLessons').lean()
+  const completedSet = new Set((me?.completedLessons || []).map(String))
+  const grade = me?.grade
+
+  // Lessons in the student's grade, ordered by subject → topic → lesson order.
+  const topicFilter = { isActive: true }
+  if (grade) topicFilter.grade = grade
+
+  const topics = await Topic.find(topicFilter).select('_id subjectId order').sort('order').lean()
+  const topicIds = topics.map(t => t._id)
+
+  const [allLessons, attempts, quizzes] = await Promise.all([
+    Lesson.find({ topicId: { $in: topicIds }, isActive: true })
+      .select('_id title topicId subjectId order icon xp duration')
+      .sort('order')
+      .lean(),
+    QuizAttempt.find({ userId: req.user._id }).select('quizId').lean(),
+    Quiz.find({
+      isActive: true,
+      ...(grade ? { $or: [{ grade }, { grade: { $exists: false } }, { grade: null }] } : {}),
+    })
+      .select('_id title icon difficulty topicId subjectId xpReward')
+      .lean(),
+  ])
+
+  const nextLesson = allLessons.find(l => !completedSet.has(String(l._id))) || null
+
+  const attemptedSet = new Set(attempts.map(a => String(a.quizId)))
+  const nextQuiz = quizzes.find(q => !attemptedSet.has(String(q._id))) || null
+
+  res.status(200).json({
+    status: 'success',
+    data: {
+      nextLesson,
+      nextQuiz,
+      progress: {
+        lessonsCompleted: completedSet.size,
+        lessonsAvailable: allLessons.length,
+        quizzesAttempted: attempts.length,
+        quizzesAvailable: quizzes.length,
+      },
+    },
+  })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/v1/users/me/bookmarks
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.getBookmarks = catchAsync(async (req, res) => {
+  const me = await User.findById(req.user._id)
+    .select('bookmarks')
+    .populate({
+      path:   'bookmarks',
+      select: 'title icon difficulty xpReward subjectId topicId quizType',
+      populate: [
+        { path: 'subjectId', select: 'name icon color' },
+        { path: 'topicId',   select: 'name icon' },
+      ],
+    })
+    .lean()
+  res.status(200).json({ status: 'success', data: { bookmarks: me?.bookmarks || [] } })
+})
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   GET /api/v1/search?q=...
+   Cross-collection search over subjects, topics, lessons and quizzes.
+   Caps each section at 10 to keep payload small.
+   ───────────────────────────────────────────────────────────────────────────── */
+exports.search = catchAsync(async (req, res) => {
+  const q = (req.query.q || '').trim()
+  if (!q) {
+    return res.status(200).json({ status: 'success', data: { subjects: [], topics: [], lessons: [], quizzes: [] } })
+  }
+  // Escape regex specials so user input "C++" or "1+1" doesn't blow up the regex.
+  const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const rx = new RegExp(safe, 'i')
+
+  const [subjects, topics, lessons, quizzes] = await Promise.all([
+    Subject.find({ isActive: true, name: rx }).select('name icon color').limit(10).lean(),
+    Topic.find({ isActive: true, name: rx }).select('name icon subjectId').limit(10).lean(),
+    Lesson.find({ isActive: true, title: rx }).select('title topicId subjectId icon').limit(10).lean(),
+    Quiz.find({ isActive: true, title: rx }).select('title icon difficulty subjectId topicId').limit(10).lean(),
+  ])
+
+  res.status(200).json({ status: 'success', data: { subjects, topics, lessons, quizzes } })
 })
