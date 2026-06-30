@@ -10,4 +10,7 @@ const badgeSchema = new mongoose.Schema({
   createdBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true })
 
+// All catalog reads filter by { isActive: true } unless ?all=true is used.
+badgeSchema.index({ isActive: 1 })
+
 module.exports = mongoose.model('Badge', badgeSchema)

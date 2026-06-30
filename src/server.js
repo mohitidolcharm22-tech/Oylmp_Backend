@@ -30,6 +30,7 @@ const userRoutes     = require('./routes/userRoutes')
 const badgeRoutes    = require('./routes/badgeRoutes')
 const classRoutes    = require('./routes/classRoutes')
 const searchRoutes   = require('./routes/searchRoutes')
+const adminRoutes    = require('./routes/adminRoutes')
 const errorHandler   = require('./middleware/errorHandler')
 const AppError       = require('./utils/AppError')
 
@@ -125,6 +126,7 @@ app.use('/api/v1/users',    apiLimiter, userRoutes)
 app.use('/api/v1/badges',   apiLimiter, shortCache, badgeRoutes)
 app.use('/api/v1/classes',  apiLimiter, classRoutes)
 app.use('/api/v1/search',   apiLimiter, searchRoutes)
+app.use('/api/v1/admin',    apiLimiter, adminRoutes)
 
 /* ─── 404 catch-all ────────────────────────────────────────────────────────── */
 app.all('*', (req, res, next) => {

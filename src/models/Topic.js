@@ -21,5 +21,7 @@ topicSchema.virtual('quizCount', {
 })
 
 topicSchema.index({ subjectId: 1, order: 1 })
+// getTopicsBySubject filters { subjectId, isActive: true } and sorts by order.
+topicSchema.index({ subjectId: 1, isActive: 1, order: 1 })
 
 module.exports = mongoose.model('Topic', topicSchema)

@@ -8,6 +8,7 @@ exports.getAll = catchAsync(async (req, res) => {
   const badges = await Badge.find(filter)
     .populate('createdBy', 'name')
     .sort({ createdAt: 1 })
+    .lean()
   res.status(200).json({ status: 'success', data: { badges } })
 })
 

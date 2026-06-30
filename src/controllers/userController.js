@@ -34,6 +34,47 @@ exports.markAllRead = catchAsync(async (req, res) => {
   res.status(200).json({ status: 'success', message: 'All notifications marked as read.' })
 })
 
+/* POST /api/v1/users/notifications/broadcast — teacher/admin only.
+   Body: { title, message, classId?, grade? }
+   Teachers can only target students in classes they teach. */
+exports.broadcastNotification = catchAsync(async (req, res, next) => {
+  const { title, message, classId, grade } = req.body
+  if (!title || !message) return next(new AppError('Title and message are required.', 400))
+
+  const filter = { role: 'student', isActive: true }
+
+  if (req.user.role === 'teacher') {
+    const teacherClassIds = (req.user.classIds || []).map(String)
+    if (!teacherClassIds.length) return next(new AppError('You are not assigned to any class yet.', 403))
+    if (classId) {
+      if (!teacherClassIds.includes(String(classId))) {
+        return next(new AppError('You are not assigned to that class.', 403))
+      }
+      filter.classIds = classId
+    } else {
+      filter.classIds = { $in: teacherClassIds }
+    }
+  } else if (classId) {
+    filter.classIds = classId
+  }
+  if (grade) filter.grade = String(grade)
+
+  const recipients = await User.find(filter).select('_id').lean()
+  if (!recipients.length) {
+    return res.status(200).json({ status: 'success', sentTo: 0, message: 'No matching recipients.' })
+  }
+
+  await Notification.insertMany(recipients.map(r => ({
+    userId: r._id,
+    title,
+    message,
+    type: 'teacher',
+    icon: '📢',
+  })))
+
+  res.status(201).json({ status: 'success', sentTo: recipients.length })
+})
+
 /* ─────────────────────────────── FEEDBACK ───────────────────────────────── */
 
 /* POST /api/v1/feedback */

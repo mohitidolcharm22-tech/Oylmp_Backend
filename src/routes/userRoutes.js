@@ -9,6 +9,7 @@ const router = express.Router()
 router.get('/notifications',                  protect, uc.getNotifications)
 router.patch('/notifications/mark-all-read',  protect, uc.markAllRead)
 router.patch('/notifications/:id/read',       protect, uc.markRead)
+router.post('/notifications/broadcast',       protect, restrictTo('admin', 'teacher'), uc.broadcastNotification)
 
 /* ─── Feedback ──────────────────────────────────────────────────────────── */
 router.post('/feedback',       protect, uc.createFeedback)

@@ -27,6 +27,18 @@ exports.getQuizzes = catchAsync(async (req, res) => {
     filter.title = { $regex: req.query.search, $options: 'i' }
   }
 
+  // Students/parents only see approved content. Teachers see their own
+  // pending/rejected plus everyone's approved. Admins see all.
+  const role = req.user?.role
+  if (role === 'student' || role === 'parent') {
+    filter.moderationStatus = 'approved'
+  } else if (role === 'teacher') {
+    filter.$or = [
+      { moderationStatus: 'approved' },
+      { createdBy: req.user._id },
+    ]
+  }
+
   // For students, restrict to quizzes that are either un-assigned (open) or
   // explicitly assigned to this user / their class. Teachers/admins see all.
   if (req.user?.role === 'student') {
@@ -105,7 +117,16 @@ exports.getQuiz = catchAsync(async (req, res, next) => {
 
 /* ── POST /api/v1/quizzes  (teacher / admin) ─────────────────────────────── */
 exports.createQuiz = catchAsync(async (req, res) => {
-  const quiz = await Quiz.create({ ...req.body, createdBy: req.user._id })
+  // Teacher-authored content goes into the admin moderation queue.
+  // Admin-authored content is auto-approved.
+  const moderationStatus = req.user.role === 'teacher' ? 'pending' : 'approved'
+  const quiz = await Quiz.create({
+    ...req.body,
+    createdBy: req.user._id,
+    moderationStatus,
+    moderatedBy: moderationStatus === 'approved' ? req.user._id : undefined,
+    moderatedAt: moderationStatus === 'approved' ? new Date() : undefined,
+  })
   res.status(201).json({ status: 'success', data: { quiz } })
 })
 
@@ -347,6 +368,54 @@ exports.getQuizAttempts = catchAsync(async (req, res) => {
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     data: { attempts },
   })
+})
+
+/* ── GET /api/v1/quizzes/attempts/:attemptId ─────────────────────────────── */
+// Detailed attempt review: returns the attempt with the quiz's full questions
+// populated, so callers can render a per-question breakdown of what the
+// student selected vs the correct answer. Permissions:
+//   student → must own the attempt
+//   parent  → student must be in req.user.children
+//   teacher → must share at least one class with the student
+//   admin   → any
+exports.getAttemptDetail = catchAsync(async (req, res, next) => {
+  const attempt = await QuizAttempt.findById(req.params.attemptId)
+    .populate({
+      path:   'quizId',
+      select: 'title icon difficulty xpReward passingScore durationMinutes questions subjectId topicId',
+      populate: [
+        { path: 'subjectId', select: 'name icon color' },
+        { path: 'topicId',   select: 'name icon' },
+      ],
+    })
+    .populate('userId', 'name grade avatarColor classIds')
+    .lean()
+
+  if (!attempt) return next(new AppError('Attempt not found.', 404))
+
+  const studentId = String(attempt.userId._id || attempt.userId)
+  const role = req.user.role
+
+  if (role === 'student') {
+    if (String(req.user._id) !== studentId) {
+      return next(new AppError('You can only view your own attempts.', 403))
+    }
+  } else if (role === 'parent') {
+    const childIds = (req.user.children || []).map(String)
+    if (!childIds.includes(studentId)) {
+      return next(new AppError('You can only view attempts for your own children.', 403))
+    }
+  } else if (role === 'teacher') {
+    const teacherClassIds = (req.user.classIds || []).map(String)
+    const studentClassIds = ((attempt.userId.classIds) || []).map(c => String(c._id || c))
+    const shared = teacherClassIds.some(c => studentClassIds.includes(c))
+    if (!shared) {
+      return next(new AppError('You can only view attempts for students in your classes.', 403))
+    }
+  }
+  // admin: no extra check
+
+  res.status(200).json({ status: 'success', data: { attempt } })
 })
 
 /* ── DELETE /api/v1/quizzes/:id/attempts/:studentId  (teacher / admin) ──── */

@@ -57,6 +57,15 @@ const quizSchema = new mongoose.Schema(
       default: [],
       index: true,
     },
+    moderationStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'approved',
+      index: true,
+    },
+    moderatedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    moderatedAt:   { type: Date },
+    moderationNote:{ type: String, trim: true },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } },
 )

@@ -13,10 +13,21 @@ const lessonSchema = new mongoose.Schema(
     xp:         { type: Number, default: 50 },
     isActive:   { type: Boolean, default: true },
     createdBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    moderationStatus: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected'],
+      default: 'approved',
+      index: true,
+    },
+    moderatedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    moderatedAt:   { type: Date },
+    moderationNote:{ type: String, trim: true },
   },
   { timestamps: true },
 )
 
 lessonSchema.index({ topicId: 1, order: 1 })
+// getLessonsByTopic filters { topicId, isActive: true } and sorts by order.
+lessonSchema.index({ topicId: 1, isActive: 1, order: 1 })
 
 module.exports = mongoose.model('Lesson', lessonSchema)

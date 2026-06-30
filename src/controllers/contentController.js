@@ -110,7 +110,19 @@ exports.updateTopic = catchAsync(async (req, res, next) => {
 
 /* ── GET /api/v1/topics/:id/lessons ──────────────────────────────────────── */
 exports.getLessonsByTopic = catchAsync(async (req, res) => {
-  const lessons = await Lesson.find({ topicId: req.params.id, isActive: true }).sort('order').lean()
+  const filter = { topicId: req.params.id, isActive: true }
+  // Students/parents only see approved lessons. Teachers see their own pending
+  // plus everyone's approved. Admins see all.
+  const role = req.user?.role
+  if (role === 'student' || role === 'parent') {
+    filter.moderationStatus = 'approved'
+  } else if (role === 'teacher') {
+    filter.$or = [
+      { moderationStatus: 'approved' },
+      { createdBy: req.user._id },
+    ]
+  }
+  const lessons = await Lesson.find(filter).sort('order').lean()
   res.status(200).json({ status: 'success', results: lessons.length, data: { lessons } })
 })
 
@@ -125,7 +137,15 @@ exports.getLesson = catchAsync(async (req, res, next) => {
 
 /* ── POST /api/v1/lessons ─────────────────────────────────────────────────── */
 exports.createLesson = catchAsync(async (req, res) => {
-  const lesson = await Lesson.create({ ...req.body, createdBy: req.user._id })
+  // Teacher-authored lessons go into the moderation queue. Admins auto-approve.
+  const moderationStatus = req.user.role === 'teacher' ? 'pending' : 'approved'
+  const lesson = await Lesson.create({
+    ...req.body,
+    createdBy: req.user._id,
+    moderationStatus,
+    moderatedBy: moderationStatus === 'approved' ? req.user._id : undefined,
+    moderatedAt: moderationStatus === 'approved' ? new Date() : undefined,
+  })
   res.status(201).json({ status: 'success', data: { lesson } })
 })
 
