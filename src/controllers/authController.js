@@ -4,26 +4,28 @@ const { validationResult } = require('express-validator')
 const User                  = require('../models/User')
 const AppError              = require('../utils/AppError')
 const catchAsync            = require('../utils/catchAsync')
-const { signAccessToken, signRefreshToken, sendRefreshCookie } = require('../utils/jwt')
+const { signAccessToken, signRefreshToken, sendAccessCookie, sendRefreshCookie } = require('../utils/jwt')
+const { getPermissionsForRole } = require('../utils/permissions')
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Helper — send back tokens + sanitised user
    ───────────────────────────────────────────────────────────────────────────── */
 const sendAuthResponse = (user, statusCode, res) => {
-  const accessToken  = signAccessToken(user._id)
+  const accessToken  = signAccessToken(user._id, user.role)
   const refreshToken = signRefreshToken(user._id)
 
-  // Store refresh token hash in DB (optional hardening — skip for POC)
-  // user.refreshToken = refreshToken; user.save({ validateBeforeSave: false })
-
+  // Both tokens go into HttpOnly cookies — JS cannot read either.
+  // XSS cannot steal tokens. SameSite:strict blocks CSRF.
+  sendAccessCookie(res, accessToken)
   sendRefreshCookie(res, refreshToken)
 
-  // Remove sensitive fields before sending
   user.password = undefined
 
   res.status(statusCode).json({
     status: 'success',
-    accessToken,
+    // No accessToken in the body — it lives in the cookie.
+    // We DO send permissions so the frontend can drive UI without decoding.
+    permissions: getPermissionsForRole(user.role),
     data: { user },
   })
 }
@@ -115,6 +117,8 @@ exports.login = catchAsync(async (req, res, next) => {
    POST /api/v1/auth/logout
    ───────────────────────────────────────────────────────────────────────────── */
 exports.logout = (req, res) => {
+  // Clear both HttpOnly cookies
+  res.clearCookie('accessToken')
   res.clearCookie('refreshToken', { path: '/api/v1/auth' })
   res.status(200).json({ status: 'success', message: 'Logged out successfully.' })
 }
@@ -126,7 +130,13 @@ exports.getMe = catchAsync(async (req, res) => {
   const user = await User.findById(req.user.id)
     .populate('teacherBadges.awardedBy', 'name')
     .lean()
-  res.status(200).json({ status: 'success', data: { user } })
+  // Return permissions alongside user so the frontend
+  // doesn\'t need to decode the (now HttpOnly) access token.
+  res.status(200).json({
+    status: 'success',
+    permissions: getPermissionsForRole(user.role),
+    data: { user },
+  })
 })
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -231,11 +241,12 @@ exports.refresh = catchAsync(async (req, res, next) => {
     return next(new AppError('Password was changed. Please log in again.', 401))
   }
 
-  const accessToken = signAccessToken(user._id)
+  const accessToken = signAccessToken(user._id, user.role)
   // Rotate the refresh token so a stolen one has limited shelf-life.
+  sendAccessCookie(res, accessToken)
   sendRefreshCookie(res, signRefreshToken(user._id))
 
-  res.status(200).json({ status: 'success', accessToken })
+  res.status(200).json({ status: 'success' })
 })
 
 /* ─────────────────────────────────────────────────────────────────────────────
