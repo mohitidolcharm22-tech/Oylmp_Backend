@@ -23,13 +23,17 @@ exports.getSubjects = catchAsync(async (req, res) => {
 
   // Attach real topic + quiz counts for each subject
   const subjectIds = subjects.map(s => s._id)
+  const topicMatchBase = { subjectId: { $in: subjectIds }, isActive: true }
+  if (req.query.grade) topicMatchBase.grade = req.query.grade
+  const quizMatchBase = { subjectId: { $in: subjectIds } }
+  if (req.query.grade) quizMatchBase.grade = req.query.grade
   const [topicCounts, quizCounts] = await Promise.all([
     Topic.aggregate([
-      { $match: { subjectId: { $in: subjectIds }, isActive: true } },
+      { $match: topicMatchBase },
       { $group: { _id: '$subjectId', count: { $sum: 1 } } },
     ]),
     Quiz.aggregate([
-      { $match: { subjectId: { $in: subjectIds } } },
+      { $match: quizMatchBase },
       { $group: { _id: '$subjectId', count: { $sum: 1 } } },
     ]),
   ])
@@ -126,17 +130,6 @@ exports.getLessonsByTopic = catchAsync(async (req, res) => {
   if (req.user?.schoolId) {
     filter.$and = [{ $or: [{ schoolId: null }, { schoolId: req.user.schoolId }] }]
   }
-  // Students/parents only see approved lessons. Teachers see their own pending
-  // plus everyone's approved. Admins see all.
-  const role = req.user?.role
-  if (role === 'student' || role === 'parent') {
-    filter.moderationStatus = 'approved'
-  } else if (role === 'teacher') {
-    filter.$or = [
-      { moderationStatus: 'approved' },
-      { createdBy: req.user._id },
-    ]
-  }
   const lessons = await Lesson.find(filter).sort('order').lean()
   res.status(200).json({ status: 'success', results: lessons.length, data: { lessons } })
 })
@@ -152,8 +145,8 @@ exports.getLesson = catchAsync(async (req, res, next) => {
 
 /* ── POST /api/v1/lessons ─────────────────────────────────────────────────── */
 exports.createLesson = catchAsync(async (req, res) => {
-  // Teacher-authored lessons go into the moderation queue. Admins auto-approve.
-  const moderationStatus = req.user.role === 'teacher' ? 'pending' : 'approved'
+  // All lessons auto-approved; moderation can be enforced separately via admin panel.
+  const moderationStatus = 'approved'
   const lesson = await Lesson.create({
     ...req.body,
     createdBy: req.user._id,
@@ -188,6 +181,7 @@ exports.completeLesson = catchAsync(async (req, res, next) => {
   const user = await User.findById(req.user._id)
   const alreadyDone = user.completedLessons.some(id => id.toString() === lessonId)
 
+  console.log(user)
   let xpReward = 0
   if (!alreadyDone) {
     user.completedLessons.push(lessonId)

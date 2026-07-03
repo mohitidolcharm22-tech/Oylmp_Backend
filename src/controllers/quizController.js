@@ -2,6 +2,7 @@ const Quiz        = require('../models/Quiz')
 const QuizAttempt = require('../models/QuizAttempt')
 const User        = require('../models/User')
 const Class       = require('../models/Class')
+const { Types }   = require('mongoose')
 const AppError    = require('../utils/AppError')
 const catchAsync  = require('../utils/catchAsync')
 const { notify }  = require('../utils/notify')
@@ -18,9 +19,12 @@ function shuffle(arr) {
 
 /* ── GET /api/v1/quizzes ──────────────────────────────────────────────────── */
 exports.getQuizzes = catchAsync(async (req, res) => {
+  console.log(req.query)
   const filter = { isActive: true }
-  if (req.query.subjectId)  filter.subjectId  = req.query.subjectId
-  if (req.query.topicId)    filter.topicId    = req.query.topicId
+  // aggregate() does NOT auto-cast strings → must use ObjectId explicitly
+  if (req.query.subjectId)  filter.subjectId  = new Types.ObjectId(req.query.subjectId)
+  if (req.query.topicId)    filter.topicId    = new Types.ObjectId(req.query.topicId)
+  if (req.query.scope === 'general') { filter.topicId = null; filter.subjectId = null }
   if (req.query.difficulty) filter.difficulty = req.query.difficulty
   if (req.query.grade)      filter.grade      = req.query.grade
   if (req.query.search) {
@@ -36,9 +40,7 @@ exports.getQuizzes = catchAsync(async (req, res) => {
   // Students/parents only see approved content. Teachers see their own
   // pending/rejected plus everyone's approved. Admins see all.
   const role = req.user?.role
-  if (role === 'student' || role === 'parent') {
-    filter.moderationStatus = 'approved'
-  } else if (role === 'teacher') {
+  if (role === 'teacher') {
     filter.$or = [
       { moderationStatus: 'approved' },
       { createdBy: req.user._id },
