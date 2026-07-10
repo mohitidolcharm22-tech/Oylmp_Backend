@@ -52,7 +52,10 @@ const sendAccessCookie = (res, token) => {
   res.cookie('accessToken', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    // 'none' is required for cross-origin requests (Vercel frontend ↔ Railway backend).
+    // 'strict' blocks the cookie entirely on cross-site requests.
+    // 'none' requires secure:true, which is enforced above in production.
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: ms,
   })
 }
@@ -66,7 +69,7 @@ const sendRefreshCookie = (res, token) => {
   res.cookie('refreshToken', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,   // 7 days in ms
     path: '/api/v1/auth',
   })
