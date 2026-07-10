@@ -8,6 +8,7 @@ const AppError    = require('../utils/AppError')
 const catchAsync  = require('../utils/catchAsync')
 const { notify }  = require('../utils/notify')
 const { updateStreak, evaluateRules, awardBadges } = require('../utils/gamification')
+const { validateYoutubeUrl } = require('../utils/youtubeValidation')
 
 /* ── GET /api/v1/subjects ──────────────────────────────────────────────────── */
 exports.getSubjects = catchAsync(async (req, res) => {
@@ -144,7 +145,17 @@ exports.getLesson = catchAsync(async (req, res, next) => {
 })
 
 /* ── POST /api/v1/lessons ─────────────────────────────────────────────────── */
-exports.createLesson = catchAsync(async (req, res) => {
+exports.createLesson = catchAsync(async (req, res, next) => {
+  // Validate YouTube URL for video lessons
+  if (req.body.type === 'video') {
+    if (!req.body.youtubeUrl) {
+      return next(new AppError('youtubeUrl is required for video lessons.', 400))
+    }
+    const ytCheck = await validateYoutubeUrl(req.body.youtubeUrl)
+    if (!ytCheck.valid) {
+      return next(new AppError(ytCheck.message, 422))
+    }
+  }
   // All lessons auto-approved; moderation can be enforced separately via admin panel.
   const moderationStatus = 'approved'
   const lesson = await Lesson.create({
@@ -160,6 +171,13 @@ exports.createLesson = catchAsync(async (req, res) => {
 
 /* ── PATCH /api/v1/lessons/:id ───────────────────────────────────────────── */
 exports.updateLesson = catchAsync(async (req, res, next) => {
+  // If changing to video type or updating youtubeUrl, validate the URL
+  if (req.body.youtubeUrl) {
+    const ytCheck = await validateYoutubeUrl(req.body.youtubeUrl)
+    if (!ytCheck.valid) {
+      return next(new AppError(ytCheck.message, 422))
+    }
+  }
   const lesson = await Lesson.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true })
   if (!lesson) return next(new AppError('Lesson not found.', 404))
   res.status(200).json({ status: 'success', data: { lesson } })
