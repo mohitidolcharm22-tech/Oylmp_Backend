@@ -71,7 +71,7 @@ const sendRefreshCookie = (res, token) => {
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,   // 7 days in ms
-    path: '/api/v1/auth',
+    path: '/',
   })
 }
 

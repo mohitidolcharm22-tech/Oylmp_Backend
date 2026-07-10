@@ -23,8 +23,10 @@ const sendAuthResponse = (user, statusCode, res) => {
 
   res.status(statusCode).json({
     status: 'success',
-    // No accessToken in the body — it lives in the cookie.
-    // We DO send permissions so the frontend can drive UI without decoding.
+    // Backward compatibility: also return Bearer token in body for clients
+    // that still use Authorization headers instead of cookie auth.
+    accessToken,
+    tokenType: 'Bearer',
     permissions: getPermissionsForRole(user.role),
     data: { user },
   })
@@ -119,7 +121,7 @@ exports.login = catchAsync(async (req, res, next) => {
 exports.logout = (req, res) => {
   // Clear both HttpOnly cookies
   res.clearCookie('accessToken')
-  res.clearCookie('refreshToken', { path: '/api/v1/auth' })
+  res.clearCookie('refreshToken', { path: '/' })
   res.status(200).json({ status: 'success', message: 'Logged out successfully.' })
 }
 

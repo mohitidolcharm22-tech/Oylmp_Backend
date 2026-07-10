@@ -2,6 +2,8 @@ const jwt     = require('jsonwebtoken')
 const User    = require('../models/User')
 const AppError = require('../utils/AppError')
 const catchAsync = require('../utils/catchAsync')
+const { signAccessToken, sendAccessCookie } = require('../utils/jwt')
+const { getPermissionsForRole } = require('../utils/permissions')
 
 /* ─────────────────────────────────────────────────────────────────────────────
    protect — verify JWT and attach user to req
@@ -23,8 +25,49 @@ exports.protect = catchAsync(async (req, res, next) => {
   // The browser sends the cookie automatically — no JS involvement needed.
   // Fallback to Authorization header for non-browser clients (Postman, mobile).
   const token = req.cookies?.accessToken || req.headers.authorization?.split(' ')[1]
+
+  const authenticateFromRefreshToken = async () => {
+    const refreshToken = req.cookies?.refreshToken
+    if (!refreshToken) {
+      return next(new AppError('You are not logged in. Please log in to access this resource.', 401))
+    }
+
+    let refreshDecoded
+    try {
+      refreshDecoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET)
+    } catch {
+      return next(new AppError('Your session has expired. Please log in again.', 401))
+    }
+
+    if (refreshDecoded.type !== 'refresh') {
+      return next(new AppError('Invalid token type.', 401))
+    }
+
+    const currentUser = await User.findById(refreshDecoded.sub)
+      .select('+passwordChangedAt -completedLessons -teacherBadges')
+
+    if (!currentUser) {
+      return next(new AppError('The account belonging to this token no longer exists.', 401))
+    }
+    if (!currentUser.isActive) {
+      return next(new AppError('Your account has been deactivated.', 403))
+    }
+    if (currentUser.changedPasswordAfter(refreshDecoded.iat)) {
+      return next(new AppError('Password was recently changed. Please log in again.', 401))
+    }
+
+    // Re-issue short-lived access token and continue the same request.
+    const renewedAccessToken = signAccessToken(currentUser._id, currentUser.role)
+    sendAccessCookie(res, renewedAccessToken)
+
+    req.user = currentUser
+    req.user.role = currentUser.role
+    req.user.permissions = getPermissionsForRole(currentUser.role)
+    return next()
+  }
+
   if (!token) {
-    return next(new AppError('You are not logged in. Please log in to access this resource.', 401))
+    return authenticateFromRefreshToken()
   }
 
   // ── Step 2: Verify signature & expiry (no DB call) ───────────────────────
@@ -35,9 +78,9 @@ exports.protect = catchAsync(async (req, res, next) => {
     decoded = jwt.verify(token, process.env.JWT_SECRET)
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
-      return next(new AppError('Your session has expired. Please log in again.', 401))
+      return authenticateFromRefreshToken()
     }
-    return next(new AppError('Invalid token. Please log in again.', 401))
+    return authenticateFromRefreshToken()
   }
 
   // Guard: only accept access tokens (not refresh tokens) on API routes.
