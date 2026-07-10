@@ -63,7 +63,7 @@ const corsOptions = {
     if (!origin || allowedOrigins.includes(origin)) {
       return callback(null, true)
     }
-    callback(null, false)   // reject silently — avoids crashing preflight
+    callback(new Error(`CORS blocked for origin: ${origin}`))
   },
   credentials: true,  // needed for HttpOnly cookie
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

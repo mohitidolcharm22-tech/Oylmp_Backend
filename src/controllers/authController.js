@@ -25,10 +25,15 @@ const sendAuthResponse = (user, statusCode, res) => {
     status: 'success',
     // Backward compatibility: also return Bearer token in body for clients
     // that still use Authorization headers instead of cookie auth.
+    token: accessToken,
     accessToken,
     tokenType: 'Bearer',
     permissions: getPermissionsForRole(user.role),
-    data: { user },
+    data: {
+      user,
+      token: accessToken,
+      accessToken,
+    },
   })
 }
 
@@ -248,7 +253,17 @@ exports.refresh = catchAsync(async (req, res, next) => {
   sendAccessCookie(res, accessToken)
   sendRefreshCookie(res, signRefreshToken(user._id))
 
-  res.status(200).json({ status: 'success' })
+  res.status(200).json({
+    status: 'success',
+    token: accessToken,
+    accessToken,
+    tokenType: 'Bearer',
+    permissions: getPermissionsForRole(user.role),
+    data: {
+      token: accessToken,
+      accessToken,
+    },
+  })
 })
 
 /* ─────────────────────────────────────────────────────────────────────────────
